@@ -325,8 +325,16 @@ def formatHash(hsh):
     return format(hsh, '0{}x'.format(HASH_ID_LEN))
 
 
-def generateProjId():
+def generateHashId():
     return formatHash(random.randrange(0, 2**160))
+
+
+def generateProjId():
+    return generateHashId()
+
+
+def generateCourseId():
+    return generateHashId()
 
 
 class CreateProject(object):
@@ -416,6 +424,20 @@ class ListProjects(object):
         resp.body = formatXML(success)
 
 
+class CreateCourse(object):
+
+    def on_get(self, req, resp):
+        session = Session()
+        user = auth(session, req, resp)
+        name = req.get_param('name')
+        courseId = generateCourseId()
+        course = Course(courseId=courseId, name=name, teachers=[user])
+        session.commit()
+        el = Elt('success', {'courseId': courseId})
+        resp.status = falcon.HTTP_200
+        resp.body = formatXML(el)
+
+
 sql_engine = sqlengine.create_engine('sqlite:///snap.sqlite', echo=False)
 sql_connection = sql_engine.connect()
 Session = sessionmaker(bind=sql_engine)
@@ -428,6 +450,7 @@ app.add_route('/createUser', CreateUser())
 app.add_route('/createProject', CreateProject())
 app.add_route('/listProjects', ListProjects())
 app.add_route('/saveProject', SaveProject())
+app.add_route('/createCourse', CreateCourse())
 
 app.add_error_handler(Exception, handle_exception)
 app.add_error_handler(ServerException, ServerException.handle_callback)
