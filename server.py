@@ -9,15 +9,17 @@ gevent.monkey.patch_all()
 import sqlalchemy
 import sqlalchemy.engine as sqlengine
 import sqlalchemy.ext.declarative
-from sqlalchemy.orm import relationship, sessionmaker
-from sqlalchemy import Column, ForeignKey, Integer, String, Table
+from sqlalchemy.orm import relationship, sessionmaker, join
+from sqlalchemy import Column, ForeignKey, Integer, String, Table, Boolean
 import falcon
 
 import base64
 import xml.etree.ElementTree as etree
+import xml.dom.minidom as mdom
 import re
 import traceback
 import hashlib
+import random
 
 HASH_ID_LEN = 32
 
@@ -66,48 +68,77 @@ submission_members = Table(
 class User(Base):
     __tablename__ = 'users'
 
-    userName = Column('userName', String, primary_key=True)
-    password = Column('password', String)
-    email = Column('email', String)
+    userName = Column(String, primary_key=True)
+    password = Column(String)
+    email = Column(String)
     projects = relationship('Project', secondary=shares)
     coursesTeaching = relationship('Course', secondary=course_teachers)
     coursesTaking = relationship('Course', secondary=course_students)
 
-    def __repr__(self):
-        return '<User(username={0})>'.format(self.userName)
+    def toXMLName(self):
+        return Elt('user', {'userName': self.userName})
 
 
 class Revision(Base):
     __tablename__ = 'revisions'
 
-    revId = Column('revId', String(HASH_ID_LEN), primary_key=True)
-    prevId = Column('prevId', String(HASH_ID_LEN), ForeignKey('revisions.revId'))
+    revId = Column(String(HASH_ID_LEN), primary_key=True)
+    prevId = Column(String(HASH_ID_LEN),
+                    ForeignKey('revisions.revId'))
+
+
+def Elt(tag, attrib=None, text='', children=()):
+    elt = mdom.Element(tag)
+    if attrib is not None:
+        for k, v in attrib.items():
+            elt.setAttribute(k, v)
+    if text:
+        elt.appendChild(mdom.Text())
+        elt.firstChild.replaceWholeText(text)
+    for child in children:
+        elt.appendChild(child)
+    return elt
+
+
+def printXML(elt):
+    return elt.toprettyxml()
+
 
 class Project(Base):
     __tablename__ = 'projects'
 
-    projId = Column('projId', String(HASH_ID_LEN), primary_key=True)
-    ownerName = Column('ownerName', String, ForeignKey('users.userName'))
-    headId = Column('headId', String(HASH_ID_LEN),
-                    ForeignKey('revisions.revId'))
+    projId = Column(String(HASH_ID_LEN), primary_key=True)
+    ownerName = Column(String, ForeignKey('users.userName'))
+    headId = Column(String(HASH_ID_LEN), ForeignKey('revisions.revId'))
     members = relationship('User', secondary=shares)
     owner = relationship('User')
-    #head = relationship('Revision', backref='headId')
+    head = relationship('Revision')
+    public = Column(Boolean)
+
+    def toXML(self):
+        proj = Elt('project')
+        proj.appendChild(Elt('projId', text=self.projId))
+        proj.appendChild(Elt('owner', children=[self.owner.toXMLName()]))
+        members = Elt('members')
+        for mem in self.members:
+            members.appendChild(mem.toXMLName())
+        proj.appendChild(members)
+        return proj
 
 
 class Course(Base):
     __tablename__ = 'courses'
 
-    courseId = Column('courseId', String(HASH_ID_LEN), primary_key=True)
+    courseId = Column(String(HASH_ID_LEN), primary_key=True)
     teachers = relationship('User', secondary=course_teachers)
     students = relationship('User', secondary=course_students)
-    name = Column('name', String)
+    name = Column(String)
 
 
 class Assignment(Base):
     __tablename__ = 'assignments'
 
-    assignId = Column('assignId', String(HASH_ID_LEN), primary_key=True)
+    assignId = Column(String(HASH_ID_LEN), primary_key=True)
     course = relationship('Course', secondary=course_assignments)
     name = Column('name', String)
 
@@ -115,14 +146,14 @@ class Assignment(Base):
 class Submission(Base):
     __tablename__ = 'submissions'
 
-    submitId = Column('submitId', String(HASH_ID_LEN), primary_key=True)
+    submitId = Column(String(HASH_ID_LEN), primary_key=True)
     assignment = relationship('Assignment', secondary=assignment_submissions)
-    revisionId = Column('revisionId', String(HASH_ID_LEN), ForeignKey('revisions.revId'))
-    projectId = Column('projectId', String(HASH_ID_LEN), ForeignKey('projects.projId'))
-    submitterName = Column('submitterName', String, ForeignKey('users.userName'))
-    #revision = relationship('Revision', backref='revisionId')
-    #project = relationship('Project', backref='projectId')
-    #submitter = relationship('User', backref='submitterName')
+    revisionId = Column(String(HASH_ID_LEN), ForeignKey('revisions.revId'))
+    projectId = Column(String(HASH_ID_LEN), ForeignKey('projects.projId'))
+    submitterName = Column(String, ForeignKey('users.userName'))
+    revision = relationship('Revision')
+    project = relationship('Project')
+    submitter = relationship('User')
     members = relationship('User', secondary=submission_members)
     time = Column('time', sqlalchemy.DateTime)
 
@@ -156,19 +187,8 @@ def forceUserPass(req, resp, params=None):
         return username, password
 
 
-class UsersResource(object):
-
-    def __init__(self):
-        self._users = []
-
-    def on_get(self, req, resp, user_id=None):
-        if auth(req, resp):
-            resp.status = falcon.HTTP_200
-            resp.body = '<user/>'
-
-
 def xmlError(msg):
-    return etree.tostring(etree.Element('error', attrib={'reason': msg}))
+    return printXML(Elt('error', attrib={'reason': msg}))
 
 
 def sendError(resp, msg):
@@ -189,6 +209,14 @@ class NotAuthenticated(ServerException):
     pass
 
 
+class IncorrectPassword(ServerException):
+    pass
+
+
+class NoSuchUser(ServerException):
+    pass
+
+
 usernameRe = re.compile('[A-z0-9_.-]+')
 
 
@@ -196,11 +224,8 @@ def validUsername(username):
     return type(username) == str and usernameRe.match(username)
 
 
-def xmlSuccess(element=None):
-    el = etree.Element('success')
-    if element is not None:
-        el.append(element)
-    return etree.tostring(el)
+def xmlSuccess(*args, **kwargs):
+    return printXML(Elt('success', *args, **kwargs))
 
 
 def hash_password(username, password):
@@ -212,10 +237,26 @@ def hash_password(username, password):
     sha1.update(username)
     return sha1.hexdigest()
 
+
 def userExists(username):
     session = Session()
+    res = session.query(User).filter(User.userName == username).count() != 0
+    session.rollback()
+    return res
+
+
+def auth(session, req, resp):
+    username, password = forceUserPass(req, resp)
+    if None in (username, password):
+        return None
     users = session.query(User).filter(User.userName == username).all()
-    return len(users) != 0
+    if len(users) == 0:
+        raise NoSuchUser()
+    user = users[0]
+    if hash_password(username, password) != user.password:
+        raise IncorrectPassword()
+    else:
+        return user
 
 
 class CreateUser(object):
@@ -223,7 +264,8 @@ class CreateUser(object):
     def on_get(self, req, resp):
         username, password = forceUserPass(req, resp)
         if not validUsername(username):
-            return sendError(resp, '{} is not a valid username.'.format(username))
+            return sendError(resp,
+                             '{} is not a valid username.'.format(username))
         if userExists(username):
             return sendError(resp, '{} is already in use.'.format(username))
         session = Session()
@@ -234,18 +276,46 @@ class CreateUser(object):
         resp.body = xmlSuccess()
 
 
-class ClassResource(object):
+def generateProjId():
+    return format(random.randint(0, 2**128), 'x')
 
-    def __init__(self):
-        self._users = []
 
-    def on_get(self, req, resp, user_id=None):
-        gevent.sleep(100)
+class CreateProject(object):
+
+    def on_get(self, req, resp):
+        session = Session()
+        user = auth(session, req, resp)
+        if user is None:
+            return
+        projId = generateProjId()
+        proj = Project(projId=projId, owner=user)
+        proj.members.append(user)
+        session.add(proj)
+        session.commit()
         resp.status = falcon.HTTP_200
-        resp.body = '<class/>'
+        el = Elt('success', {'projId': projId})
+        resp.body = printXML(el)
 
 
-sql_engine = sqlengine.create_engine('sqlite:///snap.sqlite', echo=True)
+class ListProjects(object):
+
+    def on_get(self, req, resp):
+        session = Session()
+        user = auth(session, req, resp)
+        if user is None:
+            return
+        projects = session.query(Project) \
+                          .filter(Project.members.contains(user)) \
+                          .all()
+        success = Elt('success')
+        for proj in projects:
+            success.appendChild(proj.toXML())
+        session.rollback()
+        resp.status = falcon.HTTP_200
+        resp.body = printXML(success)
+
+
+sql_engine = sqlengine.create_engine('sqlite:///snap.sqlite', echo=False)
 sql_connection = sql_engine.connect()
 Session = sessionmaker(bind=sql_engine)
 
@@ -254,6 +324,8 @@ Base.metadata.create_all(sql_engine)
 app = falcon.API()
 
 app.add_route('/createUser', CreateUser())
+app.add_route('/createProject', CreateProject())
+app.add_route('/listProjects', ListProjects())
 
 app.add_error_handler(ServerException, ServerException.handle)
 app.add_error_handler(Exception, ServerException.handle)
