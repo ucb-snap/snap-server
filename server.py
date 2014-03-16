@@ -5,6 +5,7 @@ from __future__ import print_function
 import gevent
 import gevent.monkey
 import gevent.wsgi
+import gevent.fileobject
 gevent.monkey.patch_all()
 import sqlalchemy
 import sqlalchemy.engine as sqlengine
@@ -20,8 +21,11 @@ import re
 import traceback
 import hashlib
 import random
+import os
+import os.path
 
-HASH_ID_LEN = 32
+HASH_ID_LEN = 40
+STORAGE_DIR = 'storage'
 
 Base = sqlalchemy.ext.declarative.declarative_base()
 
@@ -86,6 +90,17 @@ class Revision(Base):
     prevId = Column(String(HASH_ID_LEN),
                     ForeignKey('revisions.revId'))
 
+    def filename(self):
+        return os.path.join(STORAGE_DIR, self.revId + '.revision')
+
+    def save(self, contents):
+        f = gevent.fileobject.FileObjectThread(open(self.filename(), 'w'))
+        f.write(contents)
+
+    def load(self):
+        f = gevent.fileobject.FileObjectThread(open(self.filename()))
+        return f.read()
+
 
 def Elt(tag, attrib=None, text='', children=()):
     elt = mdom.Element(tag)
@@ -100,7 +115,7 @@ def Elt(tag, attrib=None, text='', children=()):
     return elt
 
 
-def printXML(elt):
+def formatXML(elt):
     return elt.toprettyxml()
 
 
@@ -166,7 +181,6 @@ def split_auth_token(token):
 
 def getUserPass(req):
     token = req.get_header('Authorization')
-    print(req.headers)
     if token:
         return split_auth_token(token)
     else:
@@ -188,7 +202,7 @@ def forceUserPass(req, resp, params=None):
 
 
 def xmlError(msg):
-    return printXML(Elt('error', attrib={'reason': msg}))
+    return formatXML(Elt('error', attrib={'reason': msg}))
 
 
 def sendError(resp, msg):
@@ -196,25 +210,56 @@ def sendError(resp, msg):
     resp.body = xmlError(msg)
 
 
+def handle_exception(exp, req, resp, params):
+    resp.status = falcon.HTTP_500
+    resp.body = xmlError(traceback.format_exc())
+
+
 class ServerException(Exception):
 
     @staticmethod
-    def handle(exp, req, resp, params):
-        resp.status = falcon.HTTP_500
-        resp.body = traceback.format_exc()
-        #resp.body = xmlError(repr(exp).split('(')[0] + )
+    def handle_callback(exp, req, resp, params):
+        return exp.handle(req, resp, params)
+
+    def handle(self, req, resp, params):
+        handle_exception(req, resp, params)
 
 
 class NotAuthenticated(ServerException):
     pass
 
 
+class NeedAuthentication(ServerException):
+
+    def handle(self, req, resp, params):
+        requestLogin(resp)
+        resp.body = xmlError('Need authentication')
+
+
 class IncorrectPassword(ServerException):
-    pass
+
+    def handle(self, req, resp, params):
+        requestLogin(resp)
+        resp.body = xmlError('Incorrect password')
 
 
 class NoSuchUser(ServerException):
     pass
+
+
+class NoSuchProject(ServerException):
+    pass
+
+
+class MissingParameter(ServerException):
+
+    def __init__(self, param):
+        self._param = param
+        ServerException.__init__(self)
+
+    def handle(self, req, resp, params):
+        resp.status = falcon.HTTP_400
+        resp.body = xmlError('Missing parameter {}.'.format(self._param))
 
 
 usernameRe = re.compile('[A-z0-9_.-]+')
@@ -225,7 +270,7 @@ def validUsername(username):
 
 
 def xmlSuccess(*args, **kwargs):
-    return printXML(Elt('success', *args, **kwargs))
+    return formatXML(Elt('success', *args, **kwargs))
 
 
 def hash_password(username, password):
@@ -248,7 +293,7 @@ def userExists(username):
 def auth(session, req, resp):
     username, password = forceUserPass(req, resp)
     if None in (username, password):
-        return None
+        raise NeedAuthentication()
     users = session.query(User).filter(User.userName == username).all()
     if len(users) == 0:
         raise NoSuchUser()
@@ -276,8 +321,12 @@ class CreateUser(object):
         resp.body = xmlSuccess()
 
 
+def formatHash(hsh):
+    return format(hsh, '0{}x'.format(HASH_ID_LEN))
+
+
 def generateProjId():
-    return format(random.randint(0, 2**128), 'x')
+    return formatHash(random.randrange(0, 2**160))
 
 
 class CreateProject(object):
@@ -285,8 +334,6 @@ class CreateProject(object):
     def on_get(self, req, resp):
         session = Session()
         user = auth(session, req, resp)
-        if user is None:
-            return
         projId = generateProjId()
         proj = Project(projId=projId, owner=user)
         proj.members.append(user)
@@ -294,7 +341,61 @@ class CreateProject(object):
         session.commit()
         resp.status = falcon.HTTP_200
         el = Elt('success', {'projId': projId})
-        resp.body = printXML(el)
+        resp.body = formatXML(el)
+
+
+def forceParam(req, paramName):
+    param = req.get_param(paramName)
+    if param is None:
+        raise MissingParameter(paramName)
+    else:
+        return param
+
+
+def get_or_create(session, model, defaults=None, *args, **kwargs):
+    instance = session.query(model).filter_by(*args, **kwargs).first()
+    if instance is not None:
+        return instance, False
+    else:
+        params = dict((k, v) for k, v in kwargs.iteritems() if not
+                      isinstance(v, sqlalchemy.sql.ClauseElement))
+        if defaults is not None:
+            params.update(defaults)
+        instance = model(**params)
+        session.add(instance)
+        return instance, True
+
+
+class SaveProject(object):
+
+    def on_post(self, req, resp):
+        session = Session()
+        user = auth(session, req, resp)
+        projId = forceParam(req, 'projId')
+        projects = session.query(Project) \
+                          .filter(Project.projId == projId) \
+                          .all()
+        if len(projects) == 0:
+            raise NoSuchProject()
+        project = projects[0]
+        contents = req.stream.read()
+        prevId = formatHash(0)
+        if project.head is not None:
+            prevId = project.head.revId
+        sha1 = hashlib.sha1()
+        sha1.update(prevId)
+        sha1.update(contents)
+        revId = sha1.hexdigest()
+        revision, created = get_or_create(session, Revision, revId=revId,
+                                          prevId=prevId)
+        project.head = revision
+        session.add(project)
+        session.add(revision)
+        session.commit()
+        resp.status = falcon.HTTP_200
+        resp.body = xmlSuccess({'revId': revId})
+        if created:
+            revision.save(contents)
 
 
 class ListProjects(object):
@@ -312,7 +413,7 @@ class ListProjects(object):
             success.appendChild(proj.toXML())
         session.rollback()
         resp.status = falcon.HTTP_200
-        resp.body = printXML(success)
+        resp.body = formatXML(success)
 
 
 sql_engine = sqlengine.create_engine('sqlite:///snap.sqlite', echo=False)
@@ -326,9 +427,10 @@ app = falcon.API()
 app.add_route('/createUser', CreateUser())
 app.add_route('/createProject', CreateProject())
 app.add_route('/listProjects', ListProjects())
+app.add_route('/saveProject', SaveProject())
 
-app.add_error_handler(ServerException, ServerException.handle)
-app.add_error_handler(Exception, ServerException.handle)
+app.add_error_handler(Exception, handle_exception)
+app.add_error_handler(ServerException, ServerException.handle_callback)
 
 
 def main():
