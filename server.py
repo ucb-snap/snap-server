@@ -229,6 +229,20 @@ class NotAuthenticated(ServerException):
     pass
 
 
+class NotAuthorized(ServerException):
+
+    def handle(self, req, resp, params):
+        resp.status = falcon.HTTP_403
+        resp.body = xmlError('Not authorized')
+
+
+class NotPermitted(ServerException):
+
+    def handle(self, req, resp, params):
+        resp.status = falcon.HTTP_400
+        resp.body = xmlError('Not permitted')
+
+
 class NeedAuthentication(ServerException):
 
     def handle(self, req, resp, params):
@@ -432,10 +446,171 @@ class CreateCourse(object):
         name = req.get_param('name')
         courseId = generateCourseId()
         course = Course(courseId=courseId, name=name, teachers=[user])
+        session.add(course)
         session.commit()
         el = Elt('success', {'courseId': courseId})
         resp.status = falcon.HTTP_200
         resp.body = formatXML(el)
+
+
+class Enroll(object):
+
+    def on_get(self, req, resp):
+        session = Session()
+        user = auth(session, req, resp)
+        courseId = forceParam(req, 'courseId')
+        print(courseId)
+        course = session.query(Course) \
+                        .filter(Course.courseId == courseId) \
+                        .first()
+        course.students.append(user)
+        session.commit()
+        resp.status = falcon.HTTP_200
+        resp.body = xmlSuccess()
+
+
+class UnEnroll(object):
+
+    def on_get(self, req, resp):
+        session = Session()
+        user = auth(session, req, resp)
+        courseId = forceParam(req, 'courseId')
+        course = session.query(Course) \
+                        .filter(Course.courseId == courseId) \
+                        .first()
+        course.students.remove(user)
+        session.commit()
+        resp.status = falcon.HTTP_200
+        resp.body = xmlSuccess()
+
+
+class AddTeacher(object):
+
+    def on_get(self, req, resp):
+        session = Session()
+        user = auth(session, req, resp)
+        courseId = forceParam(req, 'courseId')
+        userName = forceParam(req, 'userName')
+        print(courseId)
+        course = session.query(Course) \
+                        .filter(Course.courseId == courseId) \
+                        .first()
+        if user not in course.teachers:
+            raise NotAuthorized()
+        teacher = session.query(User) \
+                         .filter(User.userName == userName) \
+                         .first()
+        course.teachers.append(teacher)
+        session.commit()
+        resp.status = falcon.HTTP_200
+        resp.body = xmlSuccess()
+
+
+class RemoveTeacher(object):
+
+    def on_get(self, req, resp):
+        session = Session()
+        user = auth(session, req, resp)
+        courseId = forceParam(req, 'courseId')
+        userName = forceParam(req, 'userName')
+        course = session.query(Course) \
+                        .filter(Course.courseId == courseId) \
+                        .first()
+        teacher = session.query(User) \
+                         .filter(User.userName == userName) \
+                         .first()
+        if user not in course.teachers:
+            raise NotAuthorized()
+        if len(course.teachers) == 1:
+            raise NotPermitted()
+        try:
+            course.teachers.remove(teacher)
+        except ValueError:
+            resp.status = falcon.HTTP_400
+            resp.body = xmlError('User is not teaching this course.')
+        session.commit()
+        resp.status = falcon.HTTP_200
+        resp.body = xmlSuccess()
+
+
+class AddStudent(object):
+
+    def on_get(self, req, resp):
+        session = Session()
+        user = auth(session, req, resp)
+        courseId = forceParam(req, 'courseId')
+        userName = forceParam(req, 'userName')
+        print(courseId)
+        course = session.query(Course) \
+                        .filter(Course.courseId == courseId) \
+                        .first()
+        if user not in course.teachers:
+            raise NotAuthorized()
+        student = session.query(User) \
+                         .filter(User.userName == userName) \
+                         .first()
+        course.students.append(student)
+        session.commit()
+        resp.status = falcon.HTTP_200
+        resp.body = xmlSuccess()
+
+
+class RemoveStudent(object):
+
+    def on_get(self, req, resp):
+        session = Session()
+        user = auth(session, req, resp)
+        courseId = forceParam(req, 'courseId')
+        userName = forceParam(req, 'userName')
+        course = session.query(Course) \
+                        .filter(Course.courseId == courseId) \
+                        .first()
+        student = session.query(User) \
+                         .filter(User.userName == userName) \
+                         .first()
+        if user not in course.teachers:
+            raise NotAuthorized()
+        try:
+            course.students.remove(student)
+        except ValueError:
+            resp.status = falcon.HTTP_400
+            resp.body = xmlError('User is not taking this course.')
+        session.commit()
+        resp.status = falcon.HTTP_200
+        resp.body = xmlSuccess()
+
+
+class ListStudents(object):
+
+    def on_get(self, req, resp):
+        session = Session()
+        user = auth(session, req, resp)
+        courseId = forceParam(req, 'courseId')
+        course = session.query(Course) \
+                        .filter(Course.courseId == courseId) \
+                        .first()
+        if user not in course.teachers:
+            raise NotAuthorized()
+        success = Elt('success')
+        for student in course.students:
+            success.appendChild(student.toXMLName())
+        resp.status = falcon.HTTP_200
+        resp.body = formatXML(success)
+
+
+class ListTeachers(object):
+
+    def on_get(self, req, resp):
+        session = Session()
+        courseId = forceParam(req, 'courseId')
+        course = session.query(Course) \
+                        .filter(Course.courseId == courseId) \
+                        .first()
+        success = Elt('success')
+        for teacher in course.teachers:
+            success.appendChild(teacher.toXMLName())
+        resp.status = falcon.HTTP_200
+        resp.body = formatXML(success)
 
 
 sql_engine = sqlengine.create_engine('sqlite:///snap.sqlite', echo=False)
@@ -451,6 +626,14 @@ app.add_route('/createProject', CreateProject())
 app.add_route('/listProjects', ListProjects())
 app.add_route('/saveProject', SaveProject())
 app.add_route('/createCourse', CreateCourse())
+app.add_route('/enroll', Enroll())
+app.add_route('/unenroll', UnEnroll())
+app.add_route('/addTeacher', AddTeacher())
+app.add_route('/removeTeacher', RemoveTeacher())
+app.add_route('/addStudent', AddStudent())
+app.add_route('/removeStudent', RemoveStudent())
+app.add_route('/listStudents', ListStudents())
+app.add_route('/listTeachers', ListTeachers())
 
 app.add_error_handler(Exception, handle_exception)
 app.add_error_handler(ServerException, ServerException.handle_callback)
