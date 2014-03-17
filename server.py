@@ -8,9 +8,11 @@ try:
     import gevent.wsgi
     import gevent.fileobject
     gevent.monkey.patch_all()
+
     def fileProxy(fobj):
         return gevent.fileobject.FileObjectThread(fobj)
 except ImportError:
+
     def fileProxy(fobj):
         return fobj
 
@@ -156,7 +158,8 @@ def Elt(tag, attrib=None, text='', children=()):
     elt = mdom.Element(tag)
     if attrib is not None:
         for k, v in attrib.items():
-            elt.setAttribute(k, v)
+            if None not in (k, v):
+                elt.setAttribute(k, v)
     if text:
         elt.appendChild(mdom.Text())
         elt.firstChild.replaceWholeText(text)
@@ -290,7 +293,11 @@ def getUserPass(req):
     if token:
         return split_auth_token(token)
     else:
-        return (None, None)
+        token = req.get_header('Snap-Server-Authorization')
+        if token:
+            return split_auth_token(token)
+        else:
+            return (None, None)
 
 
 def requestLogin(resp):
@@ -312,13 +319,11 @@ def xmlError(msg):
 
 
 def sendError(resp, msg):
-    resp.status = falcon.HTTP_500
-    resp.body = xmlError(msg)
+    respondXML(resp, falcon.HTTP_500, xmlError(msg))
 
 
 def handle_exception(exp, req, resp, params):
-    resp.status = falcon.HTTP_500
-    resp.body = xmlError(traceback.format_exc())
+    respondXML(resp, falcon.HTTP_500, xmlError(traceback.format_exc()))
 
 
 class ServerException(Exception):
@@ -338,15 +343,13 @@ class NotAuthenticated(ServerException):
 class NotAuthorized(ServerException):
 
     def handle(self, req, resp, params):
-        resp.status = falcon.HTTP_403
-        resp.body = xmlError('Not authorized')
+        respondXML(resp, falcon.HTTP_403, xmlError('Not authorized'))
 
 
 class NotPermitted(ServerException):
 
     def handle(self, req, resp, params):
-        resp.status = falcon.HTTP_400
-        resp.body = xmlError('Not permitted')
+        respondXML(resp, falcon.HTTP_400, xmlError('Not permitted'))
 
 
 class NeedAuthentication(ServerException):
@@ -354,6 +357,7 @@ class NeedAuthentication(ServerException):
     def handle(self, req, resp, params):
         requestLogin(resp)
         resp.body = xmlError('Need authentication')
+        resp.content_type = 'application/xml; charset=utf-8'
 
 
 class IncorrectPassword(ServerException):
@@ -361,6 +365,7 @@ class IncorrectPassword(ServerException):
     def handle(self, req, resp, params):
         requestLogin(resp)
         resp.body = xmlError('Incorrect password')
+        resp.content_type = 'application/xml; charset=utf-8'
 
 
 class NoSuchUser(ServerException):
@@ -390,8 +395,8 @@ class MissingParameter(ServerException):
         ServerException.__init__(self)
 
     def handle(self, req, resp, params):
-        resp.status = falcon.HTTP_400
-        resp.body = xmlError('Missing parameter {}.'.format(self._param))
+        msg = xmlError('Missing parameter {0}.'.format(self._param))
+        respondXML(resp, falcon.HTTP_400, msg)
 
 
 class UserLogicError(ServerException):
@@ -401,8 +406,7 @@ class UserLogicError(ServerException):
         ServerException.__init__(self)
 
     def handle(self, req, resp, params):
-        resp.status = falcon.HTTP_400
-        resp.body = xmlError(self._msg)
+        respondXML(resp, falcon.HTTP_400, xmlError(self._msg))
 
 
 usernameRe = re.compile('[A-z0-9_.-]+')
@@ -448,24 +452,36 @@ def auth(session, req, resp):
         return user
 
 
+def respondXML(resp, status, body):
+    resp.content_type = 'application/xml; charset=utf-8'
+    resp.status = status
+    resp.body = body
+
+
 class CreateUser(object):
 
     def on_get(self, req, resp):
         username, password = forceUserPass(req, resp)
+        if username is None:
+            #resp.body = repr(req.headers)
+            resp.body = xmlError('No username.')
+            return
+        if password is None:
+            resp.body = xmlError('No password.')
+            return
         if not validUsername(username):
             return sendError(resp,
-                             '{} is not a valid username.'.format(username))
+                             '{0} is not a valid username.'.format(username))
         if userExists(username):
-            return sendError(resp, '{} is already in use.'.format(username))
+            return sendError(resp, '{0} is already in use.'.format(username))
         with session_scope() as session:
             session.add(User(userName=username,
                              password=hash_password(username, password)))
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess()
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 def formatHash(hsh):
-    return format(hsh, '0{}x'.format(HASH_ID_LEN))
+    return format(hsh, '0{0}x'.format(HASH_ID_LEN))
 
 
 def generateHashId():
@@ -497,9 +513,8 @@ class CreateProject(object):
             proj = Project(projId=projId, owner=user)
             proj.members.append(user)
             session.add(proj)
-            resp.status = falcon.HTTP_200
             el = Elt('success', {'projId': projId})
-            resp.body = formatXML(el)
+            respondXML(resp, falcon.HTTP_200, formatXML(el))
 
 
 class UnCreateProject(object):
@@ -511,8 +526,7 @@ class UnCreateProject(object):
             if user is not project.owner:
                 raise NotAuthorized()
             session.delete(project)
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess()
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 def forceParam(req, paramName):
@@ -556,8 +570,7 @@ class SaveProject(object):
             project.head = revision
             session.add(project)
             session.add(revision)
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess({'revId': revId})
+            respondXML(resp, falcon.HTTP_200, xmlSuccess({'revId': revId}))
             if created:
                 revision.save(contents)
 
@@ -575,8 +588,7 @@ class ListProjects(object):
             success = Elt('success')
             for proj in projects:
                 success.appendChild(proj.toXML())
-            resp.status = falcon.HTTP_200
-            resp.body = formatXML(success)
+            respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
 class CreateCourse(object):
@@ -589,8 +601,7 @@ class CreateCourse(object):
             course = Course(courseId=courseId, name=name, teachers=[user])
             session.add(course)
             el = Elt('success', {'courseId': courseId})
-            resp.status = falcon.HTTP_200
-            resp.body = formatXML(el)
+            respondXML(resp, falcon.HTTP_200, formatXML(el))
 
 
 class Enroll(object):
@@ -600,8 +611,7 @@ class Enroll(object):
             user = auth(session, req, resp)
             course = Course.fromRequest(session, req)
             course.students.append(user)
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess()
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 class UnEnroll(object):
@@ -614,8 +624,7 @@ class UnEnroll(object):
                 course.students.remove(user)
             except ValueError:
                 raise UserLogicError('User is not taking this course.')
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess()
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 class AddTeacher(object):
@@ -629,8 +638,7 @@ class AddTeacher(object):
                 raise NotAuthorized()
             teacher = User.fromRequest(session, req)
             course.teachers.append(teacher)
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess()
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 class RemoveTeacher(object):
@@ -648,8 +656,7 @@ class RemoveTeacher(object):
                 course.teachers.remove(teacher)
             except ValueError:
                 raise UserLogicError('User is not teaching this course.')
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess()
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 class AddStudent(object):
@@ -662,8 +669,7 @@ class AddStudent(object):
                 raise NotAuthorized()
             student = User.fromRequest(session, req)
             course.students.append(student)
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess()
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 class RemoveStudent(object):
@@ -679,8 +685,7 @@ class RemoveStudent(object):
                 course.students.remove(student)
             except ValueError:
                 raise UserLogicError('User is not taking this course.')
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess()
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 class ListStudents(object):
@@ -694,8 +699,7 @@ class ListStudents(object):
             success = Elt('success')
             for student in course.students:
                 success.appendChild(student.toXMLName())
-            resp.status = falcon.HTTP_200
-            resp.body = formatXML(success)
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 class ListTeachers(object):
@@ -706,8 +710,7 @@ class ListTeachers(object):
             success = Elt('success')
             for teacher in course.teachers:
                 success.appendChild(teacher.toXMLName())
-            resp.status = falcon.HTTP_200
-            resp.body = formatXML(success)
+            respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
 class CreateAssignment(object):
@@ -722,8 +725,7 @@ class CreateAssignment(object):
             assignment = Assignment(assignId=assignId, courseId=courseId,
                                     name=name)
             success = Elt('success', {'assignId': assignId})
-            resp.status = falcon.HTTP_200
-            resp.body = formatXML(success)
+            respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
 class UnCreateAssignment(object):
@@ -734,8 +736,7 @@ class UnCreateAssignment(object):
             if user not in assignment.course.teachers:
                 raise NotAuthorized()
             session.delete(assignment)
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess()
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 class SubmitProject(object):
@@ -759,8 +760,7 @@ class SubmitProject(object):
             submission.submitter = user
             submission.time = datetime.datetime.utcnow()
             session.add(submission)
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess()
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 class ShareProject(object):
@@ -773,8 +773,7 @@ class ShareProject(object):
                 raise NotAuthorized()
             newMember = User.fromRequest(session, req)
             project.members.append(newMember)
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess()
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 class UnShareProject(object):
@@ -789,8 +788,7 @@ class UnShareProject(object):
             if toRemove is project.owner:
                 raise NotAuthorized()
             project.members.remove(toRemove)
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess()
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 class MakePublic(object):
@@ -802,8 +800,7 @@ class MakePublic(object):
             if user not in project.members:
                 raise NotAuthorized()
             project.public = True
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess()
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 class UnMakePublic(object):
@@ -815,8 +812,7 @@ class UnMakePublic(object):
             if user not in project.members:
                 raise NotAuthorized()
             project.public = False
-            resp.status = falcon.HTTP_200
-            resp.body = xmlSuccess()
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 class ListAssignments(object):
@@ -830,8 +826,7 @@ class ListAssignments(object):
             success = Elt('success')
             for assign in assigns:
                 success.appendChild(assign.toXMLId())
-            resp.status = falcon.HTTP_200
-            resp.body = formatXML(success)
+            respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
 class ListCoursesEnrolled(object):
@@ -842,8 +837,7 @@ class ListCoursesEnrolled(object):
             success = Elt('success')
             for course in user.coursesTaking:
                 success.appendChild(course.toXMLId())
-            resp.status = falcon.HTTP_200
-            resp.body = formatXML(success)
+            respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
 class ListCoursesTeaching(object):
@@ -854,8 +848,7 @@ class ListCoursesTeaching(object):
             success = Elt('success')
             for course in teacher.coursesTeaching:
                 success.appendChild(course.toXMLId())
-            resp.status = falcon.HTTP_200
-            resp.body = formatXML(success)
+            respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
 class ListMembers(object):
@@ -869,8 +862,7 @@ class ListMembers(object):
             success = Elt('success')
             for member in project.members:
                 success.appendChild(member.toXMLName())
-            resp.status = falcon.HTTP_200
-            resp.body = formatXML(success)
+            respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
 class ListSubmissions(object):
@@ -884,8 +876,7 @@ class ListSubmissions(object):
             success = Elt('success')
             for submission in assignment.submissions:
                 success.appendChild(submission.toShortXML())
-            resp.status = falcon.HTTP_200
-            resp.body = formatXML(success)
+            respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
 class GetRevision(object):
@@ -896,8 +887,7 @@ class GetRevision(object):
             revision = Revision.fromRequeset(session, req)
             success = Elt('success')
             success.appendChild(revision.toXML())
-            resp.status = falcon.HTTP_200
-            resp.body = formatXML(success)
+            respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
 class LoadProject(object):
@@ -910,8 +900,13 @@ class LoadProject(object):
                 raise NotAuthorized()
             success = Elt('success')
             success.appendChild(project.toXML())
-            resp.status = falcon.HTTP_200
-            resp.body = formatXML(success)
+            respondXML(resp, falcon.HTTP_200, formatXML(success))
+
+
+def DefaultRoute(object):
+
+    def on_get(self, req, resp):
+        respondXML(resp, falcon.HTTP_400, xmlError('No method in url.'))
 
 
 sql_engine = sqlengine.create_engine('sqlite:///snap.sqlite', echo=False)
