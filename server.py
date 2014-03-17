@@ -23,6 +23,22 @@ import hashlib
 import random
 import os
 import os.path
+from contextlib import contextmanager
+
+
+@contextmanager
+def session_scope():
+    """Provide a transactional scope around a series of operations."""
+    session = Session()
+    try:
+        yield session
+        session.commit()
+    except:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
 
 HASH_ID_LEN = 40
 STORAGE_DIR = 'storage'
@@ -82,6 +98,16 @@ class User(Base):
     def toXMLName(self):
         return Elt('user', {'userName': self.userName})
 
+    @staticmethod
+    def fromRequest(session, req):
+        userName = forceParam(req, 'userName')
+        user = session.query(User) \
+                      .filter(User.userName == userName) \
+                      .first()
+        if user is None:
+            raise NoSuchUser()
+        return user
+
 
 class Revision(Base):
     __tablename__ = 'revisions'
@@ -100,6 +126,16 @@ class Revision(Base):
     def load(self):
         f = gevent.fileobject.FileObjectThread(open(self.filename()))
         return f.read()
+
+    @staticmethod
+    def fromRequest(session, req):
+        revId = forceParam(req, 'revId')
+        rev = session.query(Revision) \
+                     .filter(Revision.revId == revId) \
+                     .first()
+        if rev is None:
+            raise NoSuchRevision()
+        return rev
 
 
 def Elt(tag, attrib=None, text='', children=()):
@@ -140,6 +176,16 @@ class Project(Base):
         proj.appendChild(members)
         return proj
 
+    @staticmethod
+    def fromRequest(session, req):
+        projId = forceParam(req, 'projId')
+        proj = session.query(Project) \
+                      .filter(Project.projId == projId) \
+                      .first()
+        if proj is None:
+            raise NoSuchProject()
+        return proj
+
 
 class Course(Base):
     __tablename__ = 'courses'
@@ -149,6 +195,16 @@ class Course(Base):
     students = relationship('User', secondary=course_students)
     name = Column(String)
 
+    @staticmethod
+    def fromRequest(session, req):
+        courseId = forceParam(req, 'courseId')
+        course = session.query(Course) \
+                        .filter(Course.courseId == courseId) \
+                        .first()
+        if course is None:
+            raise NoSuchCourse()
+        return course
+
 
 class Assignment(Base):
     __tablename__ = 'assignments'
@@ -156,6 +212,16 @@ class Assignment(Base):
     assignId = Column(String(HASH_ID_LEN), primary_key=True)
     course = relationship('Course', secondary=course_assignments)
     name = Column('name', String)
+
+    @staticmethod
+    def fromRequest(session, req):
+        assignId = forceParam(req, 'assignId')
+        assign = session.query(Assignment) \
+                        .filter(Assignment.assignId == assignId) \
+                        .first()
+        if assign is None:
+            raise NoSuchAssignment()
+        return assign
 
 
 class Submission(Base):
@@ -171,6 +237,16 @@ class Submission(Base):
     submitter = relationship('User')
     members = relationship('User', secondary=submission_members)
     time = Column('time', sqlalchemy.DateTime)
+
+    @staticmethod
+    def fromRequest(session, req):
+        assignId = forceParam(req, 'assignId')
+        assign = session.query(Assignment) \
+                        .filter(Assignment.assignId == assignId) \
+                        .first()
+        if assign is None:
+            raise NoSuchAssignment()
+        return assign
 
 
 def split_auth_token(token):
@@ -265,6 +341,18 @@ class NoSuchProject(ServerException):
     pass
 
 
+class NoSuchCourse(ServerException):
+    pass
+
+
+class NoSuchAssignment(ServerException):
+    pass
+
+
+class NoSuchRevision(ServerException):
+    pass
+
+
 class MissingParameter(ServerException):
 
     def __init__(self, param):
@@ -274,6 +362,17 @@ class MissingParameter(ServerException):
     def handle(self, req, resp, params):
         resp.status = falcon.HTTP_400
         resp.body = xmlError('Missing parameter {}.'.format(self._param))
+
+
+class UserLogicError(ServerException):
+
+    def __init__(self, msg):
+        self._msg = msg
+        ServerException.__init__(self)
+
+    def handle(self, req, resp, params):
+        resp.status = falcon.HTTP_400
+        resp.body = xmlError(self._msg)
 
 
 usernameRe = re.compile('[A-z0-9_.-]+')
@@ -298,10 +397,9 @@ def hash_password(username, password):
 
 
 def userExists(username):
-    session = Session()
-    res = session.query(User).filter(User.userName == username).count() != 0
-    session.rollback()
-    return res
+    with session_scope() as session:
+        res = session.query(User).filter(User.userName == username).count() != 0
+        return res
 
 
 def auth(session, req, resp):
@@ -327,12 +425,11 @@ class CreateUser(object):
                              '{} is not a valid username.'.format(username))
         if userExists(username):
             return sendError(resp, '{} is already in use.'.format(username))
-        session = Session()
-        session.add(User(userName=username,
-                         password=hash_password(username, password)))
-        session.commit()
-        resp.status = falcon.HTTP_200
-        resp.body = xmlSuccess()
+        with session_scope() as session:
+            session.add(User(userName=username,
+                             password=hash_password(username, password)))
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess()
 
 
 def formatHash(hsh):
@@ -351,19 +448,22 @@ def generateCourseId():
     return generateHashId()
 
 
+def generateAssignmentId():
+    return generateHashId()
+
+
 class CreateProject(object):
 
     def on_get(self, req, resp):
-        session = Session()
-        user = auth(session, req, resp)
-        projId = generateProjId()
-        proj = Project(projId=projId, owner=user)
-        proj.members.append(user)
-        session.add(proj)
-        session.commit()
-        resp.status = falcon.HTTP_200
-        el = Elt('success', {'projId': projId})
-        resp.body = formatXML(el)
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            projId = generateProjId()
+            proj = Project(projId=projId, owner=user)
+            proj.members.append(user)
+            session.add(proj)
+            resp.status = falcon.HTTP_200
+            el = Elt('success', {'projId': projId})
+            resp.body = formatXML(el)
 
 
 def forceParam(req, paramName):
@@ -391,226 +491,203 @@ def get_or_create(session, model, defaults=None, *args, **kwargs):
 class SaveProject(object):
 
     def on_post(self, req, resp):
-        session = Session()
-        user = auth(session, req, resp)
-        projId = forceParam(req, 'projId')
-        projects = session.query(Project) \
-                          .filter(Project.projId == projId) \
-                          .all()
-        if len(projects) == 0:
-            raise NoSuchProject()
-        project = projects[0]
-        contents = req.stream.read()
-        prevId = formatHash(0)
-        if project.head is not None:
-            prevId = project.head.revId
-        sha1 = hashlib.sha1()
-        sha1.update(prevId)
-        sha1.update(contents)
-        revId = sha1.hexdigest()
-        revision, created = get_or_create(session, Revision, revId=revId,
-                                          prevId=prevId)
-        project.head = revision
-        session.add(project)
-        session.add(revision)
-        session.commit()
-        resp.status = falcon.HTTP_200
-        resp.body = xmlSuccess({'revId': revId})
-        if created:
-            revision.save(contents)
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            contents = req.stream.read()
+            prevId = formatHash(0)
+            if project.head is not None:
+                prevId = project.head.revId
+            sha1 = hashlib.sha1()
+            sha1.update(prevId)
+            sha1.update(contents)
+            revId = sha1.hexdigest()
+            revision, created = get_or_create(session, Revision, revId=revId,
+                                              prevId=prevId)
+            project.head = revision
+            session.add(project)
+            session.add(revision)
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess({'revId': revId})
+            if created:
+                revision.save(contents)
 
 
 class ListProjects(object):
 
     def on_get(self, req, resp):
-        session = Session()
-        user = auth(session, req, resp)
-        if user is None:
-            return
-        projects = session.query(Project) \
-                          .filter(Project.members.contains(user)) \
-                          .all()
-        success = Elt('success')
-        for proj in projects:
-            success.appendChild(proj.toXML())
-        session.rollback()
-        resp.status = falcon.HTTP_200
-        resp.body = formatXML(success)
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            if user is None:
+                return
+            projects = session.query(Project) \
+                              .filter(Project.members.contains(user)) \
+                              .all()
+            success = Elt('success')
+            for proj in projects:
+                success.appendChild(proj.toXML())
+            resp.status = falcon.HTTP_200
+            resp.body = formatXML(success)
 
 
 class CreateCourse(object):
 
     def on_get(self, req, resp):
-        session = Session()
-        user = auth(session, req, resp)
-        name = req.get_param('name')
-        courseId = generateCourseId()
-        course = Course(courseId=courseId, name=name, teachers=[user])
-        session.add(course)
-        session.commit()
-        el = Elt('success', {'courseId': courseId})
-        resp.status = falcon.HTTP_200
-        resp.body = formatXML(el)
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            name = req.get_param('name')
+            courseId = generateCourseId()
+            course = Course(courseId=courseId, name=name, teachers=[user])
+            session.add(course)
+            el = Elt('success', {'courseId': courseId})
+            resp.status = falcon.HTTP_200
+            resp.body = formatXML(el)
 
 
 class Enroll(object):
 
     def on_get(self, req, resp):
-        session = Session()
-        user = auth(session, req, resp)
-        courseId = forceParam(req, 'courseId')
-        print(courseId)
-        course = session.query(Course) \
-                        .filter(Course.courseId == courseId) \
-                        .first()
-        course.students.append(user)
-        session.commit()
-        resp.status = falcon.HTTP_200
-        resp.body = xmlSuccess()
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            course = Course.fromRequest(session, req)
+            course.students.append(user)
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess()
 
 
 class UnEnroll(object):
 
     def on_get(self, req, resp):
-        session = Session()
-        user = auth(session, req, resp)
-        courseId = forceParam(req, 'courseId')
-        course = session.query(Course) \
-                        .filter(Course.courseId == courseId) \
-                        .first()
-        course.students.remove(user)
-        session.commit()
-        resp.status = falcon.HTTP_200
-        resp.body = xmlSuccess()
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            course = Course.fromRequest(session, req)
+            try:
+                course.students.remove(user)
+            except ValueError:
+                raise UserLogicError('User is not taking this course.')
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess()
 
 
 class AddTeacher(object):
 
     def on_get(self, req, resp):
-        session = Session()
-        user = auth(session, req, resp)
-        courseId = forceParam(req, 'courseId')
-        userName = forceParam(req, 'userName')
-        print(courseId)
-        course = session.query(Course) \
-                        .filter(Course.courseId == courseId) \
-                        .first()
-        if user not in course.teachers:
-            raise NotAuthorized()
-        teacher = session.query(User) \
-                         .filter(User.userName == userName) \
-                         .first()
-        course.teachers.append(teacher)
-        session.commit()
-        resp.status = falcon.HTTP_200
-        resp.body = xmlSuccess()
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            userName = forceParam(req, 'userName')
+            course = Course.fromRequest(session, req)
+            if user not in course.teachers:
+                raise NotAuthorized()
+            teacher = User.fromRequest(session, req)
+            course.teachers.append(teacher)
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess()
 
 
 class RemoveTeacher(object):
 
     def on_get(self, req, resp):
-        session = Session()
-        user = auth(session, req, resp)
-        courseId = forceParam(req, 'courseId')
-        userName = forceParam(req, 'userName')
-        course = session.query(Course) \
-                        .filter(Course.courseId == courseId) \
-                        .first()
-        teacher = session.query(User) \
-                         .filter(User.userName == userName) \
-                         .first()
-        if user not in course.teachers:
-            raise NotAuthorized()
-        if len(course.teachers) == 1:
-            raise NotPermitted()
-        try:
-            course.teachers.remove(teacher)
-        except ValueError:
-            resp.status = falcon.HTTP_400
-            resp.body = xmlError('User is not teaching this course.')
-        session.commit()
-        resp.status = falcon.HTTP_200
-        resp.body = xmlSuccess()
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            course = Course.fromRequest(session, req)
+            teacher = User.fromRequest(session, req)
+            if user not in course.teachers:
+                raise NotAuthorized()
+            if len(course.teachers) == 1:
+                raise NotPermitted()
+            try:
+                course.teachers.remove(teacher)
+            except ValueError:
+                raise UserLogicError('User is not teaching this course.')
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess()
 
 
 class AddStudent(object):
 
     def on_get(self, req, resp):
-        session = Session()
-        user = auth(session, req, resp)
-        courseId = forceParam(req, 'courseId')
-        userName = forceParam(req, 'userName')
-        print(courseId)
-        course = session.query(Course) \
-                        .filter(Course.courseId == courseId) \
-                        .first()
-        if user not in course.teachers:
-            raise NotAuthorized()
-        student = session.query(User) \
-                         .filter(User.userName == userName) \
-                         .first()
-        course.students.append(student)
-        session.commit()
-        resp.status = falcon.HTTP_200
-        resp.body = xmlSuccess()
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            course = Course.fromRequest(session, req)
+            if user not in course.teachers:
+                raise NotAuthorized()
+            student = User.fromRequest(session, req)
+            course.students.append(student)
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess()
 
 
 class RemoveStudent(object):
 
     def on_get(self, req, resp):
-        session = Session()
-        user = auth(session, req, resp)
-        courseId = forceParam(req, 'courseId')
-        userName = forceParam(req, 'userName')
-        course = session.query(Course) \
-                        .filter(Course.courseId == courseId) \
-                        .first()
-        student = session.query(User) \
-                         .filter(User.userName == userName) \
-                         .first()
-        if user not in course.teachers:
-            raise NotAuthorized()
-        try:
-            course.students.remove(student)
-        except ValueError:
-            resp.status = falcon.HTTP_400
-            resp.body = xmlError('User is not taking this course.')
-        session.commit()
-        resp.status = falcon.HTTP_200
-        resp.body = xmlSuccess()
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            course = Course.fromRequest(session, req)
+            if user not in course.teachers:
+                raise NotAuthorized()
+            student = User.fromRequest(session, req)
+            try:
+                course.students.remove(student)
+            except ValueError:
+                raise UserLogicError('User is not taking this course.')
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess()
 
 
 class ListStudents(object):
 
     def on_get(self, req, resp):
-        session = Session()
-        user = auth(session, req, resp)
-        courseId = forceParam(req, 'courseId')
-        course = session.query(Course) \
-                        .filter(Course.courseId == courseId) \
-                        .first()
-        if user not in course.teachers:
-            raise NotAuthorized()
-        success = Elt('success')
-        for student in course.students:
-            success.appendChild(student.toXMLName())
-        resp.status = falcon.HTTP_200
-        resp.body = formatXML(success)
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            course = Course.fromRequest(session, req)
+            if user not in course.teachers:
+                raise NotAuthorized()
+            success = Elt('success')
+            for student in course.students:
+                success.appendChild(student.toXMLName())
+            resp.status = falcon.HTTP_200
+            resp.body = formatXML(success)
 
 
 class ListTeachers(object):
 
     def on_get(self, req, resp):
-        session = Session()
-        courseId = forceParam(req, 'courseId')
-        course = session.query(Course) \
-                        .filter(Course.courseId == courseId) \
-                        .first()
-        success = Elt('success')
-        for teacher in course.teachers:
-            success.appendChild(teacher.toXMLName())
-        resp.status = falcon.HTTP_200
-        resp.body = formatXML(success)
+        with session_scope() as session:
+            course = Course.fromRequest(session, req)
+            success = Elt('success')
+            for teacher in course.teachers:
+                success.appendChild(teacher.toXMLName())
+            resp.status = falcon.HTTP_200
+            resp.body = formatXML(success)
+
+
+class CreateAssignment(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            course = Course.fromRequest(session, req)
+            name = forceParam(req, 'name')
+            if user not in course.teachers:
+                raise NotAuthorized()
+            assignId = generateAssignmentId()
+            assignment = Assignment(assignId=assignId, courseId=courseId,
+                                    name=name)
+            success = Elt('success', {'assignId': assignId})
+            resp.status = falcon.HTTP_200
+            resp.body = formatXML(success)
+
+
+class UnCreateAssignment(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            assignment = Assigment.fromRequest(session, req)
+            if user not in assignment.course.teachers:
+                raise NotAuthorized()
+            session.delete(assignment)
+            success = Elt('success')
+            resp.status = falcon.HTTP_200
+            resp.body = formatXML(success)
 
 
 sql_engine = sqlengine.create_engine('sqlite:///snap.sqlite', echo=False)
@@ -634,6 +711,8 @@ app.add_route('/addStudent', AddStudent())
 app.add_route('/removeStudent', RemoveStudent())
 app.add_route('/listStudents', ListStudents())
 app.add_route('/listTeachers', ListTeachers())
+app.add_route('/createAssignment', CreateAssignment())
+app.add_route('/uncreateAssignment', UnCreateAssignment())
 
 app.add_error_handler(Exception, handle_exception)
 app.add_error_handler(ServerException, ServerException.handle_callback)
