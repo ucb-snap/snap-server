@@ -2,11 +2,18 @@
 
 from __future__ import print_function
 
-import gevent
-import gevent.monkey
-import gevent.wsgi
-import gevent.fileobject
-gevent.monkey.patch_all()
+try:
+    import gevent
+    import gevent.monkey
+    import gevent.wsgi
+    import gevent.fileobject
+    gevent.monkey.patch_all()
+    def fileProxy(fobj):
+        return gevent.fileobject.FileObjectThread(fobj)
+except ImportError:
+    def fileProxy(fobj):
+        return fobj
+
 import sqlalchemy
 import sqlalchemy.engine as sqlengine
 import sqlalchemy.ext.declarative
@@ -121,11 +128,11 @@ class Revision(Base):
         return os.path.join(STORAGE_DIR, self.revId + '.revision')
 
     def save(self, contents):
-        f = gevent.fileobject.FileObjectThread(open(self.filename(), 'w'))
+        f = fileProxy(open(self.filename(), 'w'))
         f.write(contents)
 
     def load(self):
-        f = gevent.fileobject.FileObjectThread(open(self.filename()))
+        f = fileProxy(open(self.filename()))
         return f.read()
 
     @staticmethod
@@ -950,8 +957,14 @@ app.add_error_handler(ServerException, ServerException.handle_callback)
 
 
 def main():
-    http = gevent.wsgi.WSGIServer(('', 5000), app)
+    try:
+        import gevent.wsgi
+        http = gevent.wsgi.WSGIServer(('', 5000), app)
+    except ImportError:
+        import wsgiref.simple_server
+        http = wsgiref.simple_server.WSGIServer(('', 5000), app)
     http.serve_forever()
+
 
 if __name__ == '__main__':
     main()
