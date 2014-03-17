@@ -23,6 +23,7 @@ import hashlib
 import random
 import os
 import os.path
+import datetime
 from contextlib import contextmanager
 
 
@@ -137,6 +138,12 @@ class Revision(Base):
             raise NoSuchRevision()
         return rev
 
+    def toXML(self):
+        el = Elt('revision', {'revId': self.revId})
+        el.appendChild('prevId', text=self.prevId)
+        el.appendChild(mdom.parseString(self.load()))
+        return el
+
 
 def Elt(tag, attrib=None, text='', children=()):
     elt = mdom.Element(tag)
@@ -174,6 +181,10 @@ class Project(Base):
         for mem in self.members:
             members.appendChild(mem.toXMLName())
         proj.appendChild(members)
+        if self.head is not None:
+            head = Elt('head')
+            head.appendChild(self.head.toXML())
+            proj.appendChild(head)
         return proj
 
     @staticmethod
@@ -205,6 +216,9 @@ class Course(Base):
             raise NoSuchCourse()
         return course
 
+    def toXMLId(self):
+        return Elt('course', {'courseId': self.courseId, 'name': self.name})
+
 
 class Assignment(Base):
     __tablename__ = 'assignments'
@@ -212,6 +226,7 @@ class Assignment(Base):
     assignId = Column(String(HASH_ID_LEN), primary_key=True)
     course = relationship('Course', secondary=course_assignments)
     name = Column('name', String)
+    submissions = relationship('Submission', secondary=assignment_submissions)
 
     @staticmethod
     def fromRequest(session, req):
@@ -222,6 +237,9 @@ class Assignment(Base):
         if assign is None:
             raise NoSuchAssignment()
         return assign
+
+    def toXMLId(self):
+        return Elt('assignment', {'assignId': self.assignId})
 
 
 class Submission(Base):
@@ -247,6 +265,11 @@ class Submission(Base):
         if assign is None:
             raise NoSuchAssignment()
         return assign
+
+    def toShortXML(self):
+        return Elt('submission', {'submitId': self.submitId,
+                                  'revId': self.revision.revId,
+                                  'time': self.time})
 
 
 def split_auth_token(token):
@@ -398,7 +421,9 @@ def hash_password(username, password):
 
 def userExists(username):
     with session_scope() as session:
-        res = session.query(User).filter(User.userName == username).count() != 0
+        res = session.query(User) \
+                     .filter(User.userName == username) \
+                     .count() != 0
         return res
 
 
@@ -452,6 +477,10 @@ def generateAssignmentId():
     return generateHashId()
 
 
+def generateSubmissionId():
+    return generateHashId()
+
+
 class CreateProject(object):
 
     def on_get(self, req, resp):
@@ -464,6 +493,19 @@ class CreateProject(object):
             resp.status = falcon.HTTP_200
             el = Elt('success', {'projId': projId})
             resp.body = formatXML(el)
+
+
+class UnCreateProject(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user is not project.owner:
+                raise NotAuthorized()
+            session.delete(project)
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess()
 
 
 def forceParam(req, paramName):
@@ -685,7 +727,182 @@ class UnCreateAssignment(object):
             if user not in assignment.course.teachers:
                 raise NotAuthorized()
             session.delete(assignment)
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess()
+
+
+class SubmitProject(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            assignment = Assignment.fromRequest(session, req)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            if user not in assignment.course.students:
+                raise UserLogicError('User not enrolled in '
+                                     'the class for this assignment')
+            submission = Submission()
+            submission.submitId = generateSubmissionId()
+            submission.assignment = assignment
+            submission.revision = project.head
+            submission.project = project
+            submission.members = project.members
+            submission.submitter = user
+            submission.time = datetime.datetime.utcnow()
+            session.add(submission)
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess()
+
+
+class ShareProject(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            newMember = User.fromRequest(session, req)
+            project.members.append(newMember)
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess()
+
+
+class UnShareProject(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            toRemove = User.fromRequest(session, req)
+            if toRemove is project.owner:
+                raise NotAuthorized()
+            project.members.remove(toRemove)
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess()
+
+
+class MakePublic(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            project.public = True
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess()
+
+
+class UnMakePublic(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            project.public = False
+            resp.status = falcon.HTTP_200
+            resp.body = xmlSuccess()
+
+
+class ListAssignments(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            course = Course.fromRequest(session, req)
+            assigns = session.query(Assignment) \
+                             .filter(Assignment.course == course) \
+                             .all()
             success = Elt('success')
+            for assign in assigns:
+                success.appendChild(assign.toXMLId())
+            resp.status = falcon.HTTP_200
+            resp.body = formatXML(success)
+
+
+class ListCoursesEnrolled(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            success = Elt('success')
+            for course in user.coursesTaking:
+                success.appendChild(course.toXMLId())
+            resp.status = falcon.HTTP_200
+            resp.body = formatXML(success)
+
+
+class ListCoursesTeaching(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            teacher = User.fromRequest(session, req)
+            success = Elt('success')
+            for course in teacher.coursesTeaching:
+                success.appendChild(course.toXMLId())
+            resp.status = falcon.HTTP_200
+            resp.body = formatXML(success)
+
+
+class ListMembers(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            success = Elt('success')
+            for member in project.members:
+                success.appendChild(member.toXMLName())
+            resp.status = falcon.HTTP_200
+            resp.body = formatXML(success)
+
+
+class ListSubmissions(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            assignment = Assignment.fromRequest(session, req)
+            if user not in assignment.course.teachers:
+                raise NotAuthorized()
+            success = Elt('success')
+            for submission in assignment.submissions:
+                success.appendChild(submission.toShortXML())
+            resp.status = falcon.HTTP_200
+            resp.body = formatXML(success)
+
+
+class GetRevision(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            revision = Revision.fromRequeset(session, req)
+            success = Elt('success')
+            success.appendChild(revision.toXML())
+            resp.status = falcon.HTTP_200
+            resp.body = formatXML(success)
+
+
+class LoadProject(object):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            success = Elt('success')
+            success.appendChild(project.toXML())
             resp.status = falcon.HTTP_200
             resp.body = formatXML(success)
 
@@ -698,8 +915,10 @@ Base.metadata.create_all(sql_engine)
 
 app = falcon.API()
 
+# 28 Total Methods
 app.add_route('/createUser', CreateUser())
 app.add_route('/createProject', CreateProject())
+app.add_route('/uncreateProject', UnCreateProject())
 app.add_route('/listProjects', ListProjects())
 app.add_route('/saveProject', SaveProject())
 app.add_route('/createCourse', CreateCourse())
@@ -713,6 +932,18 @@ app.add_route('/listStudents', ListStudents())
 app.add_route('/listTeachers', ListTeachers())
 app.add_route('/createAssignment', CreateAssignment())
 app.add_route('/uncreateAssignment', UnCreateAssignment())
+app.add_route('/submitProject', SubmitProject())
+app.add_route('/shareProject', ShareProject())
+app.add_route('/unshareProject', UnShareProject())
+app.add_route('/makePublic', MakePublic())
+app.add_route('/unmakePublic', UnMakePublic())
+app.add_route('/listAssignments', ListAssignments())
+app.add_route('/listCoursesEnrolled', ListCoursesEnrolled())
+app.add_route('/listCoursesTeaching', ListCoursesTeaching())
+app.add_route('/listSubmissions', ListSubmissions())
+app.add_route('/listMembers', ListMembers())
+app.add_route('/getRevision', GetRevision())
+app.add_route('/loadProject', LoadProject())
 
 app.add_error_handler(Exception, handle_exception)
 app.add_error_handler(ServerException, ServerException.handle_callback)
