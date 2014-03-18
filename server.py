@@ -409,6 +409,12 @@ class UserLogicError(ServerException):
         respondXML(resp, falcon.HTTP_400, xmlError(self._msg))
 
 
+class UnknownURL(ServerException):
+
+    def handle(self, req, resp, params):
+        respondXML(resp, falcon.HTTP_400, xmlError('Could not parse url.'))
+
+
 usernameRe = re.compile('[A-z0-9_.-]+')
 
 
@@ -903,10 +909,22 @@ class LoadProject(object):
             respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
-def DefaultRoute(object):
+class NoMethod(object):
 
     def on_get(self, req, resp):
         respondXML(resp, falcon.HTTP_400, xmlError('No method in url.'))
+
+
+class UnknownMethod(object):
+
+    def on_get(self, req, resp, method):
+        respondXML(resp,
+                   falcon.HTTP_400,
+                   xmlError('Unknown method {0!r} in url.'.format(method)))
+
+
+def raise_unknown_url(req, resp):
+    raise UnknownURL()
 
 
 sql_engine = sqlengine.create_engine('sqlite:///snap.sqlite', echo=False)
@@ -915,7 +933,11 @@ Session = sessionmaker(bind=sql_engine)
 
 Base.metadata.create_all(sql_engine)
 
-app = falcon.API()
+app = falcon.API(media_type='application/xml; charset=utf-8')
+
+app.add_sink(raise_unknown_url)
+app.add_route('/', NoMethod())
+app.add_route('/{method}', UnknownMethod())
 
 # 28 Total Methods
 app.add_route('/createUser', CreateUser())
