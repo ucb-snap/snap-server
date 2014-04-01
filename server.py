@@ -125,6 +125,7 @@ class Revision(Base):
     revId = Column(String(HASH_ID_LEN), primary_key=True)
     prevId = Column(String(HASH_ID_LEN),
                     ForeignKey('revisions.revId'))
+    prev = relationship('Revision')
 
     def filename(self):
         return os.path.join(STORAGE_DIR, self.revId + '.revision')
@@ -149,8 +150,8 @@ class Revision(Base):
 
     def toXML(self):
         el = Elt('revision', {'revId': self.revId})
-        el.appendChild('prevId', text=self.prevId)
-        el.appendChild(mdom.parseString(self.load()))
+        el.appendChild(Elt('prevId', text=self.prevId))
+        el.appendChild(mdom.parseString(self.load()).firstChild)
         return el
 
 
@@ -178,6 +179,7 @@ class Project(Base):
     projId = Column(String(HASH_ID_LEN), primary_key=True)
     ownerName = Column(String, ForeignKey('users.userName'))
     headId = Column(String(HASH_ID_LEN), ForeignKey('revisions.revId'))
+    
     members = relationship('User', secondary=shares)
     owner = relationship('User')
     head = relationship('Revision')
