@@ -179,7 +179,7 @@ class Project(Base):
     projId = Column(String(HASH_ID_LEN), primary_key=True)
     ownerName = Column(String, ForeignKey('users.userName'))
     headId = Column(String(HASH_ID_LEN), ForeignKey('revisions.revId'))
-    
+
     members = relationship('User', secondary=shares)
     owner = relationship('User')
     head = relationship('Revision')
@@ -471,7 +471,6 @@ class CreateUser(object):
     def on_get(self, req, resp):
         username, password = forceUserPass(req, resp)
         if username is None:
-            #resp.body = repr(req.headers)
             resp.body = xmlError('No username.')
             return
         if password is None:
