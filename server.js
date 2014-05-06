@@ -54,20 +54,24 @@ SnapServer.prototype._request = function (
     ) {
   var request = XMLHttpRequest();
   var myself = this;
-  function encodeQues
   try {
     if (url === undefined) {
-      url = this.url + api + '?' + this._encodeQueryString(params);
+      var qs = this._encodeQueryString(params);
+      if (qs !== '') {
+        qs = '?' + qs;
+      }
+      url = this.url + api + qs;
     }
+    console.log('url = ' + url);
     if (this.username === null || this.password === null) {
       request.open(
-          "GET",
+          verb,
           url,
           true
       );
     } else {
       request.open(
-          "GET",
+          verb,
           url,
           true,
           this.username,
@@ -75,9 +79,10 @@ SnapServer.prototype._request = function (
       );
       request.setRequestHeader(
           'Snap-Server-Authorization',
-          this.encodeAuth()
+          window.btoa(this.username + ':' + this.password)
       );
     }
+    request.withCredentials = true;
     request.onreadystatechange = function () {
       if (request.readyState === 4) {
         if (request.status !== 200 ||
@@ -108,7 +113,11 @@ SnapServer.prototype._request = function (
         }
       }
     };
-    request.send(data);
+    if (verb === 'post' || verb === 'POST') {
+      request.send(data);
+    } else {
+      request.send();
+    }
   } catch (err) {
     onError.call(myself, err.toString());
   }
@@ -230,7 +239,7 @@ SnapServer.prototype.getProjectList = function (
 };
 
 // Only here for API Emulation purposes
-SnapSever.prototype.hasProtocol = function () {
+SnapServer.prototype.hasProtocol = function () {
   return this.url.toLowerCase().indexOf('http') === 0;
 };
 
@@ -303,10 +312,31 @@ SnapServer.prototype.changePassword = function (
   }, onError, onSuccess);
 };
 
-SnapServer.prototype.callURL = nop;
-SnapServer.prototype.logout = nop;
+SnapServer.prototype.callURL = function (
+    url,
+    onSuccess,
+    onError
+    ) {
+  onError('Not supported.');
+};
+
+SnapServer.prototype.logout = function (
+    onSuccess,
+    onError
+    ) {
+  onSuccess();
+};
+
 SnapServer.prototype.disconnect = nop;
-SnapServer.prototype.callService = nop;
+
+SnapServer.prototype.callService = function (
+    serviceName,
+    onSuccess,
+    onError,
+    api
+    ) {
+  onError('Not supported.');
+};
 
 SnapServer.prototype.encodeDict = function (dict) {
     var str = '',
@@ -336,5 +366,5 @@ SnapServer.prototype.message = function (string) {
 
 var Cloud;
 
-//var SnapCloud = new SnapServer('inst.eecs.berkeley.edu/~ee40-sl/venv/server/snap.cgi');
-var SnapCloud = new SnapServer('http://localhost:5000');
+//var SnapCloud = new SnapServer('inst.eecs.berkeley.edu/~ee40-sl/venv/server/snap.cgi/');
+var SnapCloud = new SnapServer('http://localhost:5000/');
