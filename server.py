@@ -235,9 +235,6 @@ class Project(Base):
             proj.appendChild(Elt('URI', text=self.getURI(req)))
         if self.sharedName is not None:
             proj.appendChild(Elt('sharedName', text=self.sharedName))
-            # head = Elt('head')
-            # head.appendChild(self.head.toXML())
-            # proj.appendChild(head)
         return proj
 
     def canRead(self, user):
@@ -382,6 +379,9 @@ def handle_exception(exp, req, resp, params):
     respondXML(resp, falcon.HTTP_500, xmlError(traceback.format_exc()))
 
 
+# Exceptions
+
+
 class ServerException(Exception):
 
     @staticmethod
@@ -522,12 +522,6 @@ def respondXML(resp, status, body):
     resp.body = body
 
 
-class RootHandler(object):
-
-    def on_options(self, req, resp):
-        respondXML(resp, falcon.HTTP_204, xmlSuccess())
-
-
 def generate_password():
     chars = [random.choice(string.letters + string.digits) for i in range(6)]
     return ''.join(chars)
@@ -556,6 +550,140 @@ def send_reset_email(user, password):
     s.sendmail('', [user.email], msg.as_string())
     print('sending email', msg.as_string())
     s.quit()
+
+
+def formatHash(hsh):
+    return format(hsh, '0{0}x'.format(HASH_ID_LEN))
+
+
+def generateHashId():
+    return formatHash(random.randrange(0, 2**160))
+
+
+def generateProjId():
+    return generateHashId()
+
+
+def generateCourseId():
+    return generateHashId()
+
+
+def generateAssignmentId():
+    return generateHashId()
+
+
+def generateSubmissionId():
+    return generateHashId()
+
+
+def forceParam(req, paramName):
+    param = req.get_param(paramName)
+    if param is None:
+        raise MissingParameter(paramName)
+    else:
+        return param
+
+
+def get_or_create(session, model, defaults=None, *args, **kwargs):
+    instance = session.query(model).filter_by(*args, **kwargs).first()
+    if instance is not None:
+        return instance, False
+    else:
+        params = dict((k, v) for k, v in kwargs.iteritems() if not
+                      isinstance(v, sqlalchemy.sql.ClauseElement))
+        if defaults is not None:
+            params.update(defaults)
+        instance = model(**params)
+        session.add(instance)
+        return instance, True
+
+
+# Handlers
+
+
+class RootHandler(object):
+
+    def on_options(self, req, resp):
+        respondXML(resp, falcon.HTTP_204, xmlSuccess())
+
+
+class AddStudent(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            course = Course.fromRequest(session, req)
+            if user not in course.teachers:
+                raise NotAuthorized()
+            student = User.fromRequest(session, req)
+            course.students.append(student)
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class AddTeacher(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            userName = forceParam(req, 'userName')
+            course = Course.fromRequest(session, req)
+            if user not in course.teachers:
+                raise NotAuthorized()
+            teacher = User.fromRequest(session, req)
+            course.teachers.append(teacher)
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class ChangePassword(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req)
+            new_password = forceParam('newPassword')
+            user.password = hash_password(user.userName, new_password)
+            session.add(user)
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class CreateAssignment(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            course = Course.fromRequest(session, req)
+            name = forceParam(req, 'name')
+            if user not in course.teachers:
+                raise NotAuthorized()
+            assignId = generateAssignmentId()
+            assignment = Assignment(assignId=assignId, courseId=courseId,
+                                    name=name)
+            success = Elt('success', {'assignId': assignId})
+            respondXML(resp, falcon.HTTP_200, formatXML(success))
+
+
+class CreateCourse(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            name = req.get_param('name')
+            courseId = generateCourseId()
+            course = Course(courseId=courseId, name=name, teachers=[user])
+            session.add(course)
+            el = Elt('success', {'courseId': courseId})
+            respondXML(resp, falcon.HTTP_200, formatXML(el))
+
+
+class CreateProject(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            projId = generateProjId()
+            proj = Project(projId=projId, owners=[user])
+            proj.members.append(user)
+            session.add(proj)
+            el = Elt('success', {'projId': projId})
+            respondXML(resp, falcon.HTTP_200, formatXML(el))
 
 
 class CreateUser(RootHandler):
@@ -591,118 +719,14 @@ class CreateUser(RootHandler):
                 send_initial_email(user, password)
 
 
-def formatHash(hsh):
-    return format(hsh, '0{0}x'.format(HASH_ID_LEN))
-
-
-def generateHashId():
-    return formatHash(random.randrange(0, 2**160))
-
-
-def generateProjId():
-    return generateHashId()
-
-
-def generateCourseId():
-    return generateHashId()
-
-
-def generateAssignmentId():
-    return generateHashId()
-
-
-def generateSubmissionId():
-    return generateHashId()
-
-
-class CreateProject(RootHandler):
+class Enroll(RootHandler):
 
     def on_get(self, req, resp):
         with session_scope() as session:
             user = auth(session, req, resp)
-            projId = generateProjId()
-            proj = Project(projId=projId, owners=[user])
-            proj.members.append(user)
-            session.add(proj)
-            el = Elt('success', {'projId': projId})
-            respondXML(resp, falcon.HTTP_200, formatXML(el))
-
-
-class UnCreateProject(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            project = Project.fromRequest(session, req)
-            if user not in project.owners:
-                raise NotAuthorized()
-            session.delete(project)
+            course = Course.fromRequest(session, req)
+            course.students.append(user)
             respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-def forceParam(req, paramName):
-    param = req.get_param(paramName)
-    if param is None:
-        raise MissingParameter(paramName)
-    else:
-        return param
-
-
-def get_or_create(session, model, defaults=None, *args, **kwargs):
-    instance = session.query(model).filter_by(*args, **kwargs).first()
-    if instance is not None:
-        return instance, False
-    else:
-        params = dict((k, v) for k, v in kwargs.iteritems() if not
-                      isinstance(v, sqlalchemy.sql.ClauseElement))
-        if defaults is not None:
-            params.update(defaults)
-        instance = model(**params)
-        session.add(instance)
-        return instance, True
-
-
-class SaveProject(RootHandler):
-
-    def on_post(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            project = Project.fromRequest(session, req)
-            if user not in project.members:
-                raise NotAuthorized()
-            contents = req.stream.read()
-            prevId = formatHash(0)
-            sharedName = req.get_param('sharedName')
-            if sharedName is not None:
-                project.sharedName = sharedName
-            if project.head is not None:
-                prevId = project.head.revId
-            sha1 = hashlib.sha1()
-            sha1.update(prevId)
-            sha1.update(contents)
-            revId = sha1.hexdigest()
-            revision, created = get_or_create(session, Revision, revId=revId,
-                                              prevId=prevId)
-            project.head = revision
-            session.add(project)
-            session.add(revision)
-            respondXML(resp, falcon.HTTP_200, xmlSuccess({'revId': revId}))
-            if created:
-                revision.save(contents)
-
-
-class ListProjects(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            projects = session.query(Project) \
-                              .filter(Project.members.contains(user)) \
-                              .all()
-            success = Elt('success')
-            for proj in projects:
-                success.appendChild(proj.toXML(req))
-            respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
 class GetProjectByName(RootHandler):
@@ -721,290 +745,15 @@ class GetProjectByName(RootHandler):
             respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
-class CreateCourse(RootHandler):
+class GetRevision(RootHandler):
 
     def on_get(self, req, resp):
         with session_scope() as session:
             user = auth(session, req, resp)
-            name = req.get_param('name')
-            courseId = generateCourseId()
-            course = Course(courseId=courseId, name=name, teachers=[user])
-            session.add(course)
-            el = Elt('success', {'courseId': courseId})
-            respondXML(resp, falcon.HTTP_200, formatXML(el))
-
-
-class Enroll(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            course = Course.fromRequest(session, req)
-            course.students.append(user)
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class UnEnroll(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            course = Course.fromRequest(session, req)
-            try:
-                course.students.remove(user)
-            except ValueError:
-                raise UserLogicError('User is not taking this course.')
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class AddTeacher(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            userName = forceParam(req, 'userName')
-            course = Course.fromRequest(session, req)
-            if user not in course.teachers:
-                raise NotAuthorized()
-            teacher = User.fromRequest(session, req)
-            course.teachers.append(teacher)
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class RemoveTeacher(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            course = Course.fromRequest(session, req)
-            teacher = User.fromRequest(session, req)
-            if user not in course.teachers:
-                raise NotAuthorized()
-            if len(course.teachers) == 1:
-                raise NotPermitted()
-            try:
-                course.teachers.remove(teacher)
-            except ValueError:
-                raise UserLogicError('User is not teaching this course.')
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class AddStudent(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            course = Course.fromRequest(session, req)
-            if user not in course.teachers:
-                raise NotAuthorized()
-            student = User.fromRequest(session, req)
-            course.students.append(student)
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class RemoveStudent(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            course = Course.fromRequest(session, req)
-            if user not in course.teachers:
-                raise NotAuthorized()
-            student = User.fromRequest(session, req)
-            try:
-                course.students.remove(student)
-            except ValueError:
-                raise UserLogicError('User is not taking this course.')
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class ListStudents(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            course = Course.fromRequest(session, req)
-            if user not in course.teachers:
-                raise NotAuthorized()
+            revision = Revision.fromRequest(session, req)
             success = Elt('success')
-            for student in course.students:
-                success.appendChild(student.toXMLName())
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class ListTeachers(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            course = Course.fromRequest(session, req)
-            success = Elt('success')
-            for teacher in course.teachers:
-                success.appendChild(teacher.toXMLName())
+            success.appendChild(revision.toXML())
             respondXML(resp, falcon.HTTP_200, formatXML(success))
-
-
-class CreateAssignment(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            course = Course.fromRequest(session, req)
-            name = forceParam(req, 'name')
-            if user not in course.teachers:
-                raise NotAuthorized()
-            assignId = generateAssignmentId()
-            assignment = Assignment(assignId=assignId, courseId=courseId,
-                                    name=name)
-            success = Elt('success', {'assignId': assignId})
-            respondXML(resp, falcon.HTTP_200, formatXML(success))
-
-
-class UnCreateAssignment(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            assignment = Assigment.fromRequest(session, req)
-            if user not in assignment.course.teachers:
-                raise NotAuthorized()
-            session.delete(assignment)
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class SubmitProject(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            assignment = Assignment.fromRequest(session, req)
-            project = Project.fromRequest(session, req)
-            if user not in project.members:
-                raise NotAuthorized()
-            if user not in assignment.course.students:
-                raise UserLogicError('User not enrolled in '
-                                     'the class for this assignment')
-            submission = Submission()
-            submission.submitId = generateSubmissionId()
-            submission.assignment = assignment
-            submission.revision = project.head
-            submission.project = project
-            submission.members = project.members
-            submission.submitter = user
-            submission.time = datetime.datetime.utcnow()
-            session.add(submission)
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class ShareProject(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            project = Project.fromRequest(session, req)
-            if user not in project.members:
-                raise NotAuthorized()
-            newMember = User.fromRequest(session, req)
-            project.members.append(newMember)
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class ShareProjectWithTeachers(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            project = Project.fromRequest(session, req)
-            if user not in project.members:
-                raise NotAuthorized()
-            course = Course.fromRequest(session, req)
-            if user not in course.students and user not in course.teachers:
-                raise NotAuthorized()
-            project.course_shared_with_teachers.append(course)
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class UnShareProjectWithTeachers(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            project = Project.fromRequest(session, req)
-            if user not in project.members:
-                raise NotAuthorized()
-            course = Course.fromRequest(session, req)
-            if course not in project.course_shared_with_teachers:
-                raise UserLogicError('Project not shared with teachers in '
-                                     'this couse.')
-            project.course_shared_with_teachers.remove(course)
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class ShareProjectWithStudents(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            project = Project.fromRequest(session, req)
-            if user not in project.members:
-                raise NotAuthorized()
-            course = Course.fromRequest(session, req)
-            if user not in course.teachers:
-                raise NotAuthorized()
-            project.course_shared_with_students.append(course)
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class UnShareProjectWithStudents(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            project = Project.fromRequest(session, req)
-            if user not in project.members and user not in project.teachers:
-                raise NotAuthorized()
-            course = Course.fromRequest(session, req)
-            if course not in project.course_shared_with_students:
-                raise UserLogicError('Project not shared with students in '
-                                     'this couse.')
-            project.course_shared_with_students.remove(course)
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class UnShareProject(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            project = Project.fromRequest(session, req)
-            if user not in project.members:
-                raise NotAuthorized()
-            toRemove = User.fromRequest(session, req)
-            if toRemove in project.owners:
-                raise NotAuthorized()
-            project.members.remove(toRemove)
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class MakePublic(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            project = Project.fromRequest(session, req)
-            if user not in project.members:
-                raise NotAuthorized()
-            project.public = True
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
-
-
-class UnMakePublic(RootHandler):
-
-    def on_get(self, req, resp):
-        with session_scope() as session:
-            user = auth(session, req, resp)
-            project = Project.fromRequest(session, req)
-            if user not in project.members:
-                raise NotAuthorized()
-            project.public = False
-            respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
 class ListAssignments(RootHandler):
@@ -1057,6 +806,34 @@ class ListMembers(RootHandler):
             respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
+class ListProjects(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            projects = session.query(Project) \
+                              .filter(Project.members.contains(user)) \
+                              .all()
+            success = Elt('success')
+            for proj in projects:
+                success.appendChild(proj.toXML(req))
+            respondXML(resp, falcon.HTTP_200, formatXML(success))
+
+
+class ListStudents(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            course = Course.fromRequest(session, req)
+            if user not in course.teachers:
+                raise NotAuthorized()
+            success = Elt('success')
+            for student in course.students:
+                success.appendChild(student.toXMLName())
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
 class ListSubmissions(RootHandler):
 
     def on_get(self, req, resp):
@@ -1071,14 +848,14 @@ class ListSubmissions(RootHandler):
             respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
-class GetRevision(RootHandler):
+class ListTeachers(RootHandler):
 
     def on_get(self, req, resp):
         with session_scope() as session:
-            user = auth(session, req, resp)
-            revision = Revision.fromRequest(session, req)
+            course = Course.fromRequest(session, req)
             success = Elt('success')
-            success.appendChild(revision.toXML())
+            for teacher in course.teachers:
+                success.appendChild(teacher.toXMLName())
             respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
@@ -1095,6 +872,52 @@ class LoadProject(RootHandler):
             respondXML(resp, falcon.HTTP_200, formatXML(success))
 
 
+class MakePublic(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            project.public = True
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class RemoveStudent(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            course = Course.fromRequest(session, req)
+            if user not in course.teachers:
+                raise NotAuthorized()
+            student = User.fromRequest(session, req)
+            try:
+                course.students.remove(student)
+            except ValueError:
+                raise UserLogicError('User is not taking this course.')
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class RemoveTeacher(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            course = Course.fromRequest(session, req)
+            teacher = User.fromRequest(session, req)
+            if user not in course.teachers:
+                raise NotAuthorized()
+            if len(course.teachers) == 1:
+                raise NotPermitted()
+            try:
+                course.teachers.remove(teacher)
+            except ValueError:
+                raise UserLogicError('User is not teaching this course.')
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
 class ResetPassword(RootHandler):
 
     def on_get(self, req, resp):
@@ -1109,14 +932,194 @@ class ResetPassword(RootHandler):
             send_reset_email(user, password)
 
 
-class ChangePassword(RootHandler):
+class SaveProject(RootHandler):
+
+    def on_post(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            contents = req.stream.read()
+            prevId = formatHash(0)
+            sharedName = req.get_param('sharedName')
+            if sharedName is not None:
+                project.sharedName = sharedName
+            if project.head is not None:
+                prevId = project.head.revId
+            sha1 = hashlib.sha1()
+            sha1.update(prevId)
+            sha1.update(contents)
+            revId = sha1.hexdigest()
+            revision, created = get_or_create(session, Revision, revId=revId,
+                                              prevId=prevId)
+            project.head = revision
+            session.add(project)
+            session.add(revision)
+            respondXML(resp, falcon.HTTP_200, xmlSuccess({'revId': revId}))
+            if created:
+                revision.save(contents)
+
+
+class ShareProject(RootHandler):
 
     def on_get(self, req, resp):
         with session_scope() as session:
-            user = auth(session, req)
-            new_password = forceParam('newPassword')
-            user.password = hash_password(user.userName, new_password)
-            session.add(user)
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            newMember = User.fromRequest(session, req)
+            project.members.append(newMember)
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class ShareProjectWithStudents(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            course = Course.fromRequest(session, req)
+            if user not in course.teachers:
+                raise NotAuthorized()
+            project.course_shared_with_students.append(course)
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class ShareProjectWithTeachers(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            course = Course.fromRequest(session, req)
+            if user not in course.students and user not in course.teachers:
+                raise NotAuthorized()
+            project.course_shared_with_teachers.append(course)
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class SubmitProject(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            assignment = Assignment.fromRequest(session, req)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            if user not in assignment.course.students:
+                raise UserLogicError('User not enrolled in '
+                                     'the class for this assignment')
+            submission = Submission()
+            submission.submitId = generateSubmissionId()
+            submission.assignment = assignment
+            submission.revision = project.head
+            submission.project = project
+            submission.members = project.members
+            submission.submitter = user
+            submission.time = datetime.datetime.utcnow()
+            session.add(submission)
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class UnCreateAssignment(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            assignment = Assigment.fromRequest(session, req)
+            if user not in assignment.course.teachers:
+                raise NotAuthorized()
+            session.delete(assignment)
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class UnCreateProject(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.owners:
+                raise NotAuthorized()
+            session.delete(project)
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class UnEnroll(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            course = Course.fromRequest(session, req)
+            try:
+                course.students.remove(user)
+            except ValueError:
+                raise UserLogicError('User is not taking this course.')
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class UnMakePublic(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            project.public = False
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class UnShareProject(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            toRemove = User.fromRequest(session, req)
+            if toRemove in project.owners:
+                raise NotAuthorized()
+            project.members.remove(toRemove)
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class UnShareProjectWithStudents(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members and user not in project.teachers:
+                raise NotAuthorized()
+            course = Course.fromRequest(session, req)
+            if course not in project.course_shared_with_students:
+                raise UserLogicError('Project not shared with students in '
+                                     'this couse.')
+            project.course_shared_with_students.remove(course)
+            respondXML(resp, falcon.HTTP_200, xmlSuccess())
+
+
+class UnShareProjectWithTeachers(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            project = Project.fromRequest(session, req)
+            if user not in project.members:
+                raise NotAuthorized()
+            course = Course.fromRequest(session, req)
+            if course not in project.course_shared_with_teachers:
+                raise UserLogicError('Project not shared with teachers in '
+                                     'this couse.')
+            project.course_shared_with_teachers.remove(course)
             respondXML(resp, falcon.HTTP_200, xmlSuccess())
 
 
@@ -1159,37 +1162,41 @@ app.add_sink(raise_unknown_url)
 app.add_route('/', NoMethod())
 app.add_route('/{method}', UnknownMethod())
 
-# 28 Total Methods
-app.add_route('/createUser', CreateUser())
-app.add_route('/createProject', CreateProject())
-app.add_route('/uncreateProject', UnCreateProject())
-app.add_route('/listProjects', ListProjects())
-app.add_route('/saveProject', SaveProject())
-app.add_route('/createCourse', CreateCourse())
-app.add_route('/enroll', Enroll())
-app.add_route('/unenroll', UnEnroll())
-app.add_route('/addTeacher', AddTeacher())
-app.add_route('/removeTeacher', RemoveTeacher())
 app.add_route('/addStudent', AddStudent())
-app.add_route('/removeStudent', RemoveStudent())
-app.add_route('/listStudents', ListStudents())
-app.add_route('/listTeachers', ListTeachers())
+app.add_route('/addTeacher', AddTeacher())
+app.add_route('/changePassword', ChangePassword())
 app.add_route('/createAssignment', CreateAssignment())
-app.add_route('/uncreateAssignment', UnCreateAssignment())
-app.add_route('/submitProject', SubmitProject())
-app.add_route('/shareProject', ShareProject())
-app.add_route('/unshareProject', UnShareProject())
-app.add_route('/makePublic', MakePublic())
-app.add_route('/unmakePublic', UnMakePublic())
+app.add_route('/createCourse', CreateCourse())
+app.add_route('/createProject', CreateProject())
+app.add_route('/createUser', CreateUser())
+app.add_route('/enroll', Enroll())
+app.add_route('/getProjectByName', GetProjectByName())
+app.add_route('/getRevision', GetRevision())
 app.add_route('/listAssignments', ListAssignments())
 app.add_route('/listCoursesEnrolled', ListCoursesEnrolled())
 app.add_route('/listCoursesTeaching', ListCoursesTeaching())
-app.add_route('/listSubmissions', ListSubmissions())
 app.add_route('/listMembers', ListMembers())
-app.add_route('/getRevision', GetRevision())
+app.add_route('/listProjects', ListProjects())
+app.add_route('/listStudents', ListStudents())
+app.add_route('/listSubmissions', ListSubmissions())
+app.add_route('/listTeachers', ListTeachers())
 app.add_route('/loadProject', LoadProject())
-app.add_route('/getProjectByName', GetProjectByName())
+app.add_route('/makePublic', MakePublic())
+app.add_route('/removeStudent', RemoveStudent())
+app.add_route('/removeTeacher', RemoveTeacher())
 app.add_route('/resetPassword', ResetPassword())
+app.add_route('/saveProject', SaveProject())
+app.add_route('/shareProject', ShareProject())
+app.add_route('/shareProjectWithStudents', ShareProjectWithStudents())
+app.add_route('/shareProjectWithTeachers', ShareProjectWithTeachers())
+app.add_route('/submitProject', SubmitProject())
+app.add_route('/uncreateAssignment', UnCreateAssignment())
+app.add_route('/uncreateProject', UnCreateProject())
+app.add_route('/unenroll', UnEnroll())
+app.add_route('/unmakePublic', UnMakePublic())
+app.add_route('/unshareProject', UnShareProject())
+app.add_route('/unshareProjectWithStudents', UnShareProjectWithStudents())
+app.add_route('/unshareProjectWithTeachers', UnShareProjectWithTeachers())
 
 app.add_error_handler(Exception, handle_exception)
 app.add_error_handler(ServerException, ServerException.handle_callback)
