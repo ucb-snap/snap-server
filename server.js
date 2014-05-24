@@ -52,7 +52,7 @@ SnapServer.prototype._request = function (
     onSuccess,
     url
     ) {
-  var request = XMLHttpRequest();
+  var request = new XMLHttpRequest();
   var myself = this;
   try {
     if (url === undefined) {
