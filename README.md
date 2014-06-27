@@ -22,8 +22,9 @@ Supports Python 2.6 through 3.x
 
 ##Running the server
 
-(coming soon)
 1. cd to the directory where you have cloned this repo
 2. `source virt/bin/activate`
 3. `ps aux | grep 5000 | grep -v grep | awk '{print $2}' | xargs kill -9` will kill any processes running on port 5000.
 4. `python server.py` - it should be serving at http://localhost:5000
+
+(Kyle, is this right?)
