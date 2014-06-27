@@ -362,7 +362,7 @@ def forceUserPass(req, resp, params=None):
     username, password = getUserPass(req)
     if None in (username, password):
         requestLogin(resp)
-        return None, None
+        raise NeedAuthentication()
     else:
         return username, password
 
