@@ -27,5 +27,7 @@ Supports Python 2.6 through 3.x
 4. `python dev.py` - it should be serving at http://localhost:5000
 
 ##Using the server
-1. Look in server.py to find the URL routes that the server understands
-2. You can can open a Python shell with `python -i`  - rest coming soon
+1. Open `http://localhost:5000/createUser` and enter info for a test user
+2. Look at the bottom server.py to find the URL routes
+   For example, try `http://localhost:5000/createProject` and `http://localhost:5000/loadProject`
+3. You can can open a Python shell with `python -i`  - rest coming soon
