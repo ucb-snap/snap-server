@@ -21,10 +21,11 @@ Supports Python 2.6 through 3.x
 7. `pip install -r requirements.txt` (Needed for any change to the requirements file)
 
 ##Running the server
-
 1. cd to the directory where you have cloned this repo
 2. `source virt/bin/activate`
 3. `ps aux | grep 5000 | grep -v grep | awk '{print $2}' | xargs kill -9` will kill any processes running on port 5000.
-4. `python server.py` - it should be serving at http://localhost:5000
+4. `python dev.py` - it should be serving at http://localhost:5000
 
-(Kyle, is this right?)
+##Using the server
+1. Look in server.py to find the URL routes that the server understands
+2. You can can open a Python shell with `python -i`  - rest coming soon
