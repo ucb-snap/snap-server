@@ -1,4 +1,5 @@
-SQLAlchemy==0.9.4
-falcon==0.1
-Werkzeug==0.9.6
-gevent==1.0.1
+six>=1.7.3
+SQLAlchemy>=0.9.4
+falcon>=0.1
+Werkzeug>=0.9.6
+gevent>=1.0.1
