@@ -350,7 +350,7 @@ def getUserPass(req):
         if token:
             return split_auth_token(token)
         else:
-            return (None, None)
+            return None, None
 
 
 def requestLogin(resp):
@@ -366,6 +366,12 @@ def forceUserPass(req, resp, params=None):
     else:
         return username, password
 
+def removeUserPass(req, resp, params=None):
+    username, password = getUserPass(req)
+    if username:
+        raise NeedAuthentication()
+    else:
+        return username, password
 
 def xmlError(msg):
     return formatXML(Elt('error', attrib={'reason': msg}))
@@ -427,7 +433,8 @@ class IncorrectPassword(ServerException):
 class NoSuchUser(ServerException):
 
     def handle(self, req, resp, params):
-        respondXML(resp, falcon.HTTP_500, xmlError('User does not exist.'))
+        resp.body = xmlError('User does not exist.')
+        resp.content_type = 'application/xml; charset=utf-8'
 
 
 class NoSuchProject(ServerException):
@@ -508,6 +515,7 @@ def auth(session, req, resp):
         raise NeedAuthentication()
     users = session.query(User).filter(User.userName == username).all()
     if len(users) == 0:
+        requestLogin(resp)
         raise NoSuchUser()
     user = users[0]
     if hash_password(username, password) != user.password:
@@ -691,8 +699,6 @@ class CreateUser(RootHandler):
     def on_get(self, req, resp):
         username = req.get_param('userName')
         password = req.get_param('password')
-        if username is None:
-            username, password = forceUserPass(req, resp)
         email = req.get_param('email')
         send_email = False
         if not validUsername(username):
@@ -717,6 +723,24 @@ class CreateUser(RootHandler):
             respondXML(resp, falcon.HTTP_200, formatXML(res))
             if send_email:
                 send_initial_email(user, password)
+
+class Login(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            user = auth(session, req, resp)
+            res = Elt('success')
+            res.appendChild(Elt('user', {
+                'userName': user.userName,
+                }))
+        respondXML(resp, falcon.HTTP_200, formatXML(res))
+
+class Logout(RootHandler):
+
+    def on_get(self, req, resp):
+        with session_scope() as session:
+            username, password = removeUserPass(req, resp)
+        respondXML(resp, falcon.HTTP_200, formatXML(Elt('success')))
 
 
 class Enroll(RootHandler):
@@ -1181,6 +1205,8 @@ app.add_route('/listStudents', ListStudents())
 app.add_route('/listSubmissions', ListSubmissions())
 app.add_route('/listTeachers', ListTeachers())
 app.add_route('/loadProject', LoadProject())
+app.add_route('/login', Login())
+app.add_route('/logout', Logout())
 app.add_route('/makePublic', MakePublic())
 app.add_route('/removeStudent', RemoveStudent())
 app.add_route('/removeTeacher', RemoveTeacher())
