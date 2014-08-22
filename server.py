@@ -123,9 +123,17 @@ class User(Base):
     userName = Column(String, primary_key=True)
     password = Column(String)
     email = Column(String)
+    token = Column(String)
     projects = relationship('Project', secondary=shares)
     coursesTeaching = relationship('Course', secondary=course_teachers)
     coursesTaking = relationship('Course', secondary=course_students)
+
+    def generate_user_token(self):
+        self.token = generateToken()
+        return self.token
+
+    def check_user_token(self, token):
+        return self.token == token
 
     def toXMLName(self):
         return Elt('user', {'userName': self.userName})
@@ -509,7 +517,7 @@ def userExists(username):
         return res
 
 
-def auth(session, req, resp):
+def auth(session, req, resp, token=None):
     username, password = forceUserPass(req, resp)
     if None in (username, password):
         raise NeedAuthentication()
@@ -583,6 +591,8 @@ def generateAssignmentId():
 def generateSubmissionId():
     return generateHashId()
 
+def generateToken():
+    return generateHashId()
 
 def forceParam(req, paramName):
     param = req.get_param(paramName)
@@ -732,6 +742,7 @@ class Login(RootHandler):
             res = Elt('success')
             res.appendChild(Elt('user', {
                 'userName': user.userName,
+                'token': user.token
                 }))
         respondXML(resp, falcon.HTTP_200, formatXML(res))
 
