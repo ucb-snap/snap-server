@@ -374,12 +374,6 @@ def forceUserPass(req, resp, params=None):
     else:
         return username, password
 
-def removeUserPass(req, resp, params=None):
-    username, password = getUserPass(req)
-    if username:
-        raise NeedAuthentication()
-    else:
-        return username, password
 
 def xmlError(msg):
     return formatXML(Elt('error', attrib={'reason': msg}))
@@ -437,6 +431,11 @@ class IncorrectPassword(ServerException):
         resp.body = xmlError('Incorrect password')
         resp.content_type = 'application/xml; charset=utf-8'
 
+class BadToken(ServerException):
+
+    def handle(self, req, resp, params):
+        resp.body = xmlError('Bad token')
+        resp.content_type = 'application/xml; charset=utf-8'
 
 class NoSuchUser(ServerException):
 
@@ -517,7 +516,7 @@ def userExists(username):
         return res
 
 
-def auth(session, req, resp, token=None):
+def auth(session, req, resp, generate_token=False):
     username, password = forceUserPass(req, resp)
     if None in (username, password):
         raise NeedAuthentication()
@@ -528,8 +527,12 @@ def auth(session, req, resp, token=None):
     user = users[0]
     if hash_password(username, password) != user.password:
         raise IncorrectPassword()
-    else:
-        return user
+    token = req.get_param('token')
+    if generate_token:
+        token = user.generate_user_token()
+    if not user.check_user_token(token):
+        raise BadToken()
+    return user
 
 
 def respondXML(resp, status, body):
@@ -738,7 +741,7 @@ class Login(RootHandler):
 
     def on_get(self, req, resp):
         with session_scope() as session:
-            user = auth(session, req, resp)
+            user = auth(session, req, resp, True)
             res = Elt('success')
             res.appendChild(Elt('user', {
                 'userName': user.userName,
@@ -750,8 +753,12 @@ class Logout(RootHandler):
 
     def on_get(self, req, resp):
         with session_scope() as session:
-            username, password = removeUserPass(req, resp)
-        respondXML(resp, falcon.HTTP_200, formatXML(Elt('success')))
+            user = auth(session, req, resp, True)
+            res = Elt('success')
+            res.appendChild(Elt('user', {
+                'userName': user.userName,
+                }))
+        respondXML(resp, falcon.HTTP_200, formatXML(res))
 
 
 class Enroll(RootHandler):
