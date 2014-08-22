@@ -1,0 +1,154 @@
+<html>
+<script>
+function logout() {
+	function reqListener () {
+	  console.log(this.responseText);
+	}
+	user = document.getElementById('user').value;
+	pass = document.getElementById('pass').value;
+	auth = window.btoa(user + ":" + pass);
+	console.log(user);
+	console.log(pass);
+	console.log(auth);
+	var oReq = new XMLHttpRequest();
+	oReq.onload = reqListener;
+	oReq.withCredentials = true;
+	oReq.open("get", "http://localhost:5000/logout", false);
+	if (user && pass) { oReq.setRequestHeader("Snap-Server-Authorization", "Basic " + auth); }
+	oReq.send();
+
+}
+
+function login() {
+	function reqListener () {
+	  console.log(this.responseText);
+	}
+	user = document.getElementById('user').value;
+	pass = document.getElementById('pass').value;
+	auth = window.btoa(user + ":" + pass);
+	console.log(user);
+	console.log(pass);
+	console.log(auth);
+	var oReq = new XMLHttpRequest();
+	oReq.onload = reqListener;
+	oReq.withCredentials = true;
+	oReq.open("get", "http://localhost:5000/login", false);
+	if (user && pass) { oReq.setRequestHeader("Snap-Server-Authorization", "Basic " + auth); }
+	oReq.send();
+}
+
+function listprojects() {
+	token = document.getElementById('token').value;
+	console.log(token);
+
+	function reqListener () {
+	  console.log(this.responseText);
+	}
+	user = document.getElementById('user').value;
+	pass = document.getElementById('pass').value;
+	auth = window.btoa(user + ":" + pass);
+	console.log(user);
+	console.log(pass);
+	console.log(auth);
+	var oReq = new XMLHttpRequest();
+	oReq.onload = reqListener;
+	oReq.withCredentials = true;
+	oReq.open("get", "http://localhost:5000/listProjects?token=" + token, false);
+	if (user && pass) { oReq.setRequestHeader("Snap-Server-Authorization", "Basic " + auth); }
+	oReq.send();
+}
+
+function newproject() {
+	token = document.getElementById('token').value;
+	console.log(token);
+
+	function reqListener () {
+	  console.log(this.responseText);
+	}
+	user = document.getElementById('user').value;
+	pass = document.getElementById('pass').value;
+	auth = window.btoa(user + ":" + pass);
+	console.log(user);
+	console.log(pass);
+	console.log(auth);
+	var oReq = new XMLHttpRequest();
+	oReq.onload = reqListener;
+	oReq.withCredentials = true;
+	oReq.open("get", "http://localhost:5000/createProject?token=" + token, false);
+	if (user && pass) { oReq.setRequestHeader("Snap-Server-Authorization", "Basic " + auth); }
+	oReq.send();
+}
+
+
+function changepassword() {
+	token = document.getElementById('token').value;
+	console.log(token);
+	newPass = document.getElementById('newPass').value;
+	console.log(newPass);
+
+	function reqListener () {
+	  console.log(this.responseText);
+	}
+	user = document.getElementById('user').value;
+	pass = document.getElementById('pass').value;
+	auth = window.btoa(user + ":" + pass);
+	console.log(user);
+	console.log(pass);
+	console.log(auth);
+	var oReq = new XMLHttpRequest();
+	oReq.onload = reqListener;
+	oReq.withCredentials = true;
+	oReq.open("get", "http://localhost:5000/changePassword?token=" + token + "&newPassword=" + newPass, false);
+	if (user && pass) { oReq.setRequestHeader("Snap-Server-Authorization", "Basic " + auth); }
+	oReq.send();
+}
+function saveproject() {
+	token = document.getElementById('token').value;
+	console.log(token);
+	projId = document.getElementById('projId').value;
+	console.log(projId);
+	proj = document.getElementById('proj').value;
+	console.log(proj);
+
+	function reqListener () {
+	  console.log(this.responseText);
+	}
+	user = document.getElementById('user').value;
+	pass = document.getElementById('pass').value;
+	auth = window.btoa(user + ":" + pass);
+	console.log(user);
+	console.log(pass);
+	console.log(auth);
+	var oReq = new XMLHttpRequest();
+	oReq.onload = reqListener;
+	oReq.withCredentials = true;
+	oReq.open("post", "http://localhost:5000/saveProject?token=" + token + "&projId=" + projId, false);
+	if (user && pass) { oReq.setRequestHeader("Snap-Server-Authorization", "Basic " + auth); }
+	oReq.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+	oReq.send(proj);
+}
+
+</script>
+<body>
+	Username
+<input id="user"></input>
+Password
+<input id="pass"></input>
+Token
+<input id="token"></input>
+<br>
+<button onclick="login()">login</button>
+<button onclick="logout()">logout</button>
+<button onclick="listprojects()">list projects</button>
+<button onclick="newproject()">create project</button>
+<button onclick="saveproject()">save project</button>
+<button onclick="changepassword()">change password</button>
+New Password
+<input id="newPass"></input>
+<br> 
+Project ID
+<input id="projId"></input></br>
+Project Data
+<textarea id="proj"></textarea>
+</body>
+</html>

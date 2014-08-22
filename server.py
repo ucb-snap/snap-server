@@ -229,7 +229,7 @@ class Project(Base):
     def getURI(self, req):
         env = dict(req.env)
         env['PATH_INFO'] = '/GetRevision'
-        env['QUERY_STRING'] = urllib.urlencode({'revId': self.headId})
+        env['QUERY_STRING'] = urllib.urlencode({'revId': self.headId, 'token': req.get_param('token')})
         return wsgiref.util.request_uri(env)
 
     def toXML(self, req):
@@ -349,16 +349,18 @@ def split_auth_token(token):
     return decoded.split(':')
 
 
+
 def getUserPass(req):
-    token = req.get_header('Authorization')
-    if token:
-        return split_auth_token(token)
-    else:
-        token = req.get_header('Snap-Server-Authorization')
-        if token:
-            return split_auth_token(token)
-        else:
-            return None, None
+    ssatoken = req.get_header('Snap-Server-Authorization')
+    atoken = req.get_header('Authorization')
+    if ssatoken and atoken and ssatoken != atoken:
+        raise NeedAuthentication()
+    if ssatoken:
+        return split_auth_token(ssatoken)
+    if atoken:
+        return split_auth_token(atoken)
+    return None, None
+
 
 
 def requestLogin(resp):
@@ -659,8 +661,8 @@ class ChangePassword(RootHandler):
 
     def on_get(self, req, resp):
         with session_scope() as session:
-            user = auth(session, req)
-            new_password = forceParam('newPassword')
+            user = auth(session, req, resp)
+            new_password = forceParam(req, 'newPassword')
             user.password = hash_password(user.userName, new_password)
             session.add(user)
             respondXML(resp, falcon.HTTP_200, xmlSuccess())
@@ -748,6 +750,7 @@ class Login(RootHandler):
                 'token': user.token
                 }))
         respondXML(resp, falcon.HTTP_200, formatXML(res))
+
 
 class Logout(RootHandler):
 
@@ -1184,11 +1187,12 @@ def raise_unknown_url(req, resp):
 
 
 def set_access_control(req, resp, params):
-    resp.set_header('Access-Control-Allow-Origin', '*')
+    resp.set_header('Access-Control-Allow-Credentials', 'true')
+    resp.set_header('Access-Control-Allow-Origin', 'null')
     resp.set_header('Access-Control-Allow-Headers',
                     'Snap-Server-Authorization, Authorization')
-    resp.set_header('Access-Control-Allow-Methods', 'GET, POST')
-    resp.set_header('Allow', 'GET, POST')
+    resp.set_header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS')
+    resp.set_header('Allow', 'GET, POST, PUT, OPTIONS')
 
 
 sql_engine = sqlengine.create_engine('sqlite:///snap.sqlite', echo=False)
